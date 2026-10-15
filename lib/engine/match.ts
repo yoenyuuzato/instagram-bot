@@ -39,23 +39,32 @@ export function typoTolerance(word: string) {
   return len >= 7 ? 2 : len >= 4 ? 1 : 0;
 }
 
-/** Levenshteinova vzdálenost; nad `max` vrací max + 1 (předčasné ukončení). */
-export function levenshtein(a: string, b: string, max = Infinity): number {
+/**
+ * Damerau-Levenshteinova vzdálenost (varianta OSA): vložení, smazání, záměna i přehození dvou sousedních
+ * znaků = 1 překlep ("tvroba" → "tvorba" = 1). Nad `max` vrací max + 1 (předčasné ukončení).
+ */
+export function damerauLevenshtein(a: string, b: string, max = Infinity): number {
   const s = [...a];
   const t = [...b];
   if (Math.abs(s.length - t.length) > max) return max + 1;
+  let prev2: number[] = [];
   let prev = Array.from({ length: t.length + 1 }, (_, j) => j);
+  let prevMin = 0;
   for (let i = 1; i <= s.length; i++) {
     const cur = [i];
     let rowMin = i;
     for (let j = 1; j <= t.length; j++) {
       cur[j] = Math.min(prev[j] + 1, cur[j - 1] + 1, prev[j - 1] + (s[i - 1] === t[j - 1] ? 0 : 1));
+      if (i > 1 && j > 1 && s[i - 1] === t[j - 2] && s[i - 2] === t[j - 1]) cur[j] = Math.min(cur[j], prev2[j - 2] + 1);
       rowMin = Math.min(rowMin, cur[j]);
     }
-    if (rowMin > max) return max + 1;
+    // Další řádky vycházejí z tohoto (+0) nebo z předchozího přes přehození (+1).
+    if (Math.min(rowMin, prevMin + 1) > max) return max + 1;
+    prevMin = rowMin;
+    prev2 = prev;
     prev = cur;
   }
-  return prev[t.length];
+  return Math.min(prev[t.length], max + 1);
 }
 
 const words = (s: string) => s.split(/[^\p{L}\p{N}]+/u).filter(Boolean);
@@ -69,7 +78,7 @@ export function fuzzyContains(text: string, keyword: string): boolean {
   const tw = words(text);
   if (!kw.length || kw.length > tw.length) return false;
   for (let start = 0; start + kw.length <= tw.length; start++) {
-    if (kw.every((k, i) => levenshtein(k, tw[start + i], typoTolerance(k)) <= typoTolerance(k))) return true;
+    if (kw.every((k, i) => damerauLevenshtein(k, tw[start + i], typoTolerance(k)) <= typoTolerance(k))) return true;
   }
   return false;
 }
