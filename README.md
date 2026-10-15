@@ -32,6 +32,8 @@ Instagram ──webhook──▶ /api/webhooks/instagram ──(after)──▶ 
 | `lib/engine/process.ts` | Zpracování payloadu: dedup, kontakty, match, akce, log. |
 | `lib/ai/gemini.ts` | Volání Gemini REST API (`generateContent`, bez SDK) – timeout 20 s, max. 2 pokusy (jen 429/5xx), minimální thinking, čištění markdownu, max. ~600 znaků. |
 | `lib/knowledge/crawl.ts` | Crawler znalostní báze: robots.txt, sitemap.xml (fallback odkazy z homepage), max. 30 stránek, timeout 10 s/stránka, čistý text max. ~60 000 znaků. |
+| `lib/notify/detect.ts` | Detekce e-mailu a telefonu (CZ/SK, +420/00420/+421, mezery, pomlčky) v textu DM. |
+| `lib/notify/email.ts` | Odeslání e-mailu přes Resend REST API (bez SDK) a šablona upozornění na lead. |
 | `lib/ai/prompt.ts` | Výchozí šablona system promptu (Top Profit Design). |
 | `lib/instagram.ts` | Wrapper nad Graph API (`replyToComment`, `sendPrivateReply`, `sendDirectMessage`). V MOCK režimu vrací jen popis requestu. |
 | `lib/crypto.ts` | AES-256-GCM šifrování access tokenů. |
@@ -41,7 +43,7 @@ Instagram ──webhook──▶ /api/webhooks/instagram ──(after)──▶ 
 
 ### Datový model
 
-- **accounts** – `ig_user_id`, `username`, `access_token` (šifrovaně), `token_expires_at`, `active`, `ai_enabled`, `ai_system_prompt`, `ai_fallback_text`, `knowledge_url`, `knowledge_text`, `knowledge_updated_at`
+- **accounts** – `ig_user_id`, `username`, `access_token` (šifrovaně), `token_expires_at`, `active`, `ai_enabled`, `ai_system_prompt`, `ai_fallback_text`, `knowledge_url`, `knowledge_text`, `knowledge_updated_at`, `notify_email`
 - **rules** – `account_id`, `trigger_type` (`comment` \| `dm`), `keywords[]`, `match_mode` (`contains` \| `exact`), `post_id` (volitelné), `public_reply`, `dm_text`, `dm_button_url`, `dm_button_title`, `max_words` (jen krátká zpráva, `null` = vypnuto), `active`
 - **events_log** – příchozí webhooky i odchozí odpovědi: `direction` (in/out), `kind`, `status`, `dedup_key` (unikátní), `detail`, `payload`, `simulated`
 - **contacts** – `account_id` + `ig_scoped_id` (unikátní), `username`, `last_interaction_at` (poslední příchozí DM → 24h okno)
@@ -66,6 +68,15 @@ Instagram ──webhook──▶ /api/webhooks/instagram ──(after)──▶ 
 - **Test:** Simulátor → typ DM → text, který nesedí na pravidlo. Gemini se volá doopravdy, Instagram ne. Volba „Vynutit AI“ otestuje odpověď i u účtu s vypnutou AI.
 - **Znalostní báze z webu:** v `/admin/accounts` u účtu zadej URL webu → **Načíst / Obnovit web**. Crawler přečte `robots.txt` (respektuje `Disallow`/`Allow` a jeho `Sitemap:`), vezme URL ze `sitemap.xml` (i sitemap index), a když chybí, odkazy z homepage na stejnou doménu. Stáhne max. 30 stránek (10 s timeout, paralelně, celkem do ~45 s – akce má `maxDuration = 60`), odstraní `nav`, `footer`, `script`, `style` apod., opakované řádky (menu, cookie lišta) bere jen jednou, stránky ve stejném jazyce jako zadaná URL dá dopředu a spojí vše pod nadpisy `## URL — titulek` do max. ~60 000 znaků. Když má účet znalosti, AI odpovídá jen z nich a z promptu, ceny uvádí jen když jsou ve znalostech, a když odpověď nezná, řekne, že se ozve člověk, a požádá o e-mail. Obnova je ruční.
 - **Klíč:** zdarma v [Google AI Studio](https://aistudio.google.com/apikey). Free tier má limity požadavků za minutu/den – při překročení vrací 429 a použije se fallback.
+
+## Upozornění na leady (e-mail)
+
+- **Kdy:** každá příchozí ostrá DM (simulace ne) na účet s vyplněným **E-mailem pro upozornění** v `/admin/accounts`, která obsahuje e-mail nebo telefon (CZ/SK – `777 123 456`, `+420 777-123-456`, `00420…`, `+421 905 …`, `0905 …`). Platí bez ohledu na to, jestli odpověděla pravidla, AI nebo nikdo.
+- **E-mail:** předmět `Nový kontakt z IG: @username` (když username neznáme – DM webhook ho neposílá –, je tam IG scoped ID), zjištěný e-mail/telefon, celá zpráva, posledních 6 zpráv konverzace z `events_log`, čas a odkaz na https://www.instagram.com/direct/inbox/. `Reply-To` = e-mail leadu, pokud ho poslal.
+- **Dedup:** max. 1 upozornění na stejný kontakt + hodnotu (řádek `lead_notify` s dedup klíčem `lead_notify:<účet>:<kontakt>:<hodnota>`). Když odeslání selže, klíč se uvolní a zkusí se to při další zprávě se stejným údajem.
+- **Nezdržuje odpověď:** upozornění se odesílají až po zpracování všech zpráv z webhooku (po odeslání DM), stále uvnitř `after()`.
+- **Bez `RESEND_API_KEY`** se upozornění jen zaloguje (`console.warn` + v Logu událostí jako přeskočené), nic nespadne.
+- **Test:** v `/admin/accounts` tlačítko **Poslat testovací e-mail** (pošle ukázkové upozornění). S výchozím odesílatelem `onboarding@resend.dev` Resend doručí jen na e-mail vlastníka Resend účtu – pro jiné adresáty ověřte doménu a nastavte `NOTIFY_FROM`.
 
 ## Lokální spuštění
 
@@ -101,6 +112,8 @@ Pak v administraci: **Účty** → přidat účet ručně (libovolné číselné
 | `INSTAGRAM_GRAPH_API_VERSION` | ne | výchozí `v23.0` |
 | `GEMINI_API_KEY` | pro AI | API klíč Google Gemini ([AI Studio](https://aistudio.google.com/apikey)) |
 | `GEMINI_MODEL` | ne | model Gemini, výchozí `gemini-2.5-flash` |
+| `RESEND_API_KEY` | pro upozornění | API klíč [Resend](https://resend.com/api-keys) |
+| `NOTIFY_FROM` | ne | odesílatel upozornění, výchozí `IG Bot <onboarding@resend.dev>` |
 | `GEMINI_THINKING_LEVEL` | ne | jen Gemini 3+: úroveň přemýšlení, výchozí `low` (`minimal` jen u modelů, které ji podporují) |
 
 Na Vercelu nastavte stejné proměnné v Project → Settings → Environment Variables (nebo `vercel env add`).

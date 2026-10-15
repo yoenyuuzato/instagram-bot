@@ -44,6 +44,7 @@ export const kindLabels: Record<string, string> = {
   private_reply: "Private reply",
   dm: "DM odpověď",
   ai_reply: "AI odpověď",
+  lead_notify: "Upozornění na lead",
 };
 
 export function formatDate(d: Date | null | undefined) {

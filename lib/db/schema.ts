@@ -31,6 +31,8 @@ export const accounts = pgTable("accounts", {
   knowledgeUrl: text("knowledge_url"),
   knowledgeText: text("knowledge_text"),
   knowledgeUpdatedAt: timestamp("knowledge_updated_at", { withTimezone: true }),
+  /** Kam posílat upozornění na nové leady (e-mail/telefon v DM). Prázdné = neposílat. */
+  notifyEmail: text("notify_email"),
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
   updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
 });
@@ -72,7 +74,7 @@ export const eventsLog = pgTable(
     ruleId: integer("rule_id").references(() => rules.id, { onDelete: "set null" }),
     direction: text("direction").$type<"in" | "out">().notNull(),
     kind: text("kind")
-      .$type<"comment" | "message" | "public_reply" | "private_reply" | "dm" | "ai_reply" | "webhook">()
+      .$type<"comment" | "message" | "public_reply" | "private_reply" | "dm" | "ai_reply" | "lead_notify" | "webhook">()
       .notNull(),
     status: text("status")
       .$type<"received" | "processed" | "ignored" | "pending" | "sent" | "failed" | "skipped">()

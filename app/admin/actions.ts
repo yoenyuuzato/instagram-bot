@@ -9,6 +9,7 @@ import { getDb } from "@/lib/db";
 import { accounts, rules } from "@/lib/db/schema";
 import { encrypt } from "@/lib/crypto";
 import { crawlSite, normalizeStartUrl } from "@/lib/knowledge/crawl";
+import { buildLeadEmail, isValidEmail, sendEmail } from "@/lib/notify/email";
 
 export type FormState = { error?: string; ok?: string } | undefined;
 
@@ -204,4 +205,47 @@ export async function crawlKnowledgeAction(_: FormState, fd: FormData): Promise<
     revalidatePath("/admin/accounts");
     return { error: e instanceof Error ? e.message : String(e) };
   }
+}
+
+/** Uloží e-mail pro upozornění na leady; s intent=test navíc pošle ukázkové upozornění. */
+export async function saveNotifyEmailAction(_: FormState, fd: FormData): Promise<FormState> {
+  await requireAdmin();
+  const id = Number(str(fd, "id"));
+  if (!Number.isInteger(id) || id <= 0) return { error: "Neplatný účet." };
+  const notifyEmail = str(fd, "notifyEmail");
+  const test = str(fd, "intent") === "test";
+  if (notifyEmail && !isValidEmail(notifyEmail)) return { error: "Neplatný e-mail." };
+  if (test && !notifyEmail) return { error: "Vyplňte e-mail pro upozornění." };
+
+  const db = getDb();
+  const [account] = await db
+    .update(accounts)
+    .set({ notifyEmail: notifyEmail || null, updatedAt: new Date() })
+    .where(eq(accounts.id, id))
+    .returning({ username: accounts.username });
+  if (!account) return { error: "Účet nenalezen." };
+  revalidatePath("/admin/accounts");
+  if (!test) return { ok: notifyEmail ? "Uloženo – upozornění na leady jsou zapnutá." : "Uloženo – upozornění jsou vypnutá." };
+
+  const now = new Date();
+  const res = await sendEmail(
+    buildLeadEmail({
+      to: notifyEmail,
+      accountUsername: account.username,
+      contactLabel: "testovaci_kontakt",
+      hits: [
+        { type: "email", value: "jana.novakova@example.com", raw: "jana.novakova@example.com" },
+        { type: "phone", value: "+420777123456", raw: "777 123 456" },
+      ],
+      message: "Dobrý den, mám zájem o nový web. Můj e-mail je jana.novakova@example.com, tel. 777 123 456.",
+      history: [
+        { role: "user", text: "Ahoj, děláte i e-shopy?", at: new Date(now.getTime() - 120_000) },
+        { role: "model", text: "Ahoj! Ano, stavíme e-shopy na míru. Nechceš mi poslat e-mail, ať se ti ozveme?", at: new Date(now.getTime() - 110_000) },
+        { role: "user", text: "Dobrý den, mám zájem o nový web. Můj e-mail je jana.novakova@example.com, tel. 777 123 456.", at: now },
+      ],
+      at: now,
+    }),
+  );
+  if (!res.ok) return { error: `Uloženo, ale testovací e-mail se neodeslal: ${res.error}` };
+  return { ok: `Testovací e-mail odeslán na ${notifyEmail} (Resend id ${res.id}).` };
 }

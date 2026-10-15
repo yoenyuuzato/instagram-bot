@@ -6,6 +6,8 @@ import { env } from "@/lib/env";
 import * as ig from "@/lib/instagram";
 import { generateReply, type ChatTurn } from "@/lib/ai/gemini";
 import { DEFAULT_SYSTEM_PROMPT } from "@/lib/ai/prompt";
+import { detectContacts, type ContactHit } from "@/lib/notify/detect";
+import { buildLeadEmail, sendEmail } from "@/lib/notify/email";
 import { findMatchingRule } from "./match";
 import { fillTemplate as fill } from "./template";
 import { isWithinDmWindow, isWithinPrivateReplyWindow } from "./window";
@@ -25,10 +27,14 @@ export type ProcessOptions = {
   now?: Date;
 };
 
-type Ctx = ProcessOptions & { now: Date };
+type Ctx = ProcessOptions & {
+  now: Date;
+  /** Úlohy, které nesmí zdržet odpovědi (upozornění na leady) – spustí se až po zpracování celého payloadu. */
+  deferred: (() => Promise<void>)[];
+};
 
 export async function processWebhookPayload(payload: WebhookPayload, options: ProcessOptions = {}) {
-  const ctx: Ctx = { ...options, now: options.now ?? new Date() };
+  const ctx: Ctx = { ...options, now: options.now ?? new Date(), deferred: [] };
   const results: EventResult[] = [];
   if (payload?.object !== "instagram" || !Array.isArray(payload.entry)) return results;
 
@@ -43,6 +49,15 @@ export async function processWebhookPayload(payload: WebhookPayload, options: Pr
     for (const msg of entry.messaging ?? []) {
       if (!msg.message?.mid) continue;
       results.push(await handleMessage(account, entry.id, msg, ctx));
+    }
+  }
+
+  // Až po odeslání všech odpovědí (webhook celé zpracování spouští v after()).
+  for (const task of ctx.deferred) {
+    try {
+      await task();
+    } catch (e) {
+      console.error("[engine] odložená úloha selhala", e);
     }
   }
   return results;
@@ -154,6 +169,16 @@ async function handleMessage(account: Account | null, accountIgId: string, msg: 
   // Příchozí DM otevírá (prodlužuje) 24h okno.
   const contact = await upsertContact(account.id, msg.sender.id, null, toDate(msg.timestamp, ctx.now));
 
+  // Lead: e-mail/telefon ve zprávě → upozornění (jen ostré zprávy, odesílá se až po odpovědi).
+  const notifyTo = account.notifyEmail?.trim();
+  if (notifyTo && !ctx.simulated) {
+    const hits = detectContacts(text);
+    if (hits.length) {
+      const at = toDate(msg.timestamp, ctx.now);
+      ctx.deferred.push(() => notifyLead(account, contact, message.mid, text, hits, notifyTo, at, ctx));
+    }
+  }
+
   // Klíčová pravidla mají přednost, AI odpovídá jen na zbytek.
   const rule = findMatchingRule(await loadRules(account.id, "dm"), { type: "dm", text });
   if (!rule) {
@@ -261,10 +286,67 @@ async function aiReply(account: Account, contact: Contact, mid: string, ctx: Ctx
   return { kind, ...out, request: sent.request, mock: sent.mock, ai };
 }
 
+/**
+ * Upozornění na lead e-mailem. Dedup: 1× na kontakt + hodnotu (řádek `lead_notify` s dedup klíčem).
+ * Když odeslání selže, dedup klíč se uvolní, takže se to zkusí znovu při další zprávě se stejným údajem.
+ */
+async function notifyLead(
+  account: Account,
+  contact: Contact,
+  mid: string,
+  text: string,
+  hits: ContactHit[],
+  to: string,
+  at: Date,
+  ctx: Ctx,
+) {
+  const db = getDb();
+  const claimed: { hit: ContactHit; id: number }[] = [];
+  for (const hit of hits) {
+    const [row] = await db
+      .insert(eventsLog)
+      .values({
+        accountId: account.id,
+        direction: "out",
+        kind: "lead_notify",
+        status: "pending",
+        dedupKey: `lead_notify:${account.id}:${contact.igScopedId}:${hit.value}`,
+        igObjectId: mid,
+        contactIgId: contact.igScopedId,
+        text: hit.value,
+      })
+      .onConflictDoNothing({ target: eventsLog.dedupKey })
+      .returning({ id: eventsLog.id });
+    if (row) claimed.push({ hit, id: row.id });
+  }
+  if (!claimed.length) return;
+
+  const history = await loadConversation(account.id, contact.igScopedId, ctx);
+  const res = await sendEmail(
+    buildLeadEmail({
+      to,
+      accountUsername: account.username,
+      contactLabel: contact.username ?? contact.igScopedId,
+      hits: claimed.map((c) => c.hit),
+      message: text,
+      history,
+      at,
+    }),
+  );
+  await db
+    .update(eventsLog)
+    .set({
+      status: res.ok ? "sent" : res.skipped ? "skipped" : "failed",
+      detail: `→ ${to} · ${res.ok ? `Resend id=${res.id}` : res.error}`,
+      ...(res.ok ? {} : { dedupKey: null }),
+    })
+    .where(inArray(eventsLog.id, claimed.map((c) => c.id)));
+}
+
 /** Posledních N zpráv konverzace s kontaktem (příchozí DM + úspěšně odeslané odpovědi), od nejstarší. */
-async function loadConversation(accountId: number, contactIgId: string, ctx: Ctx): Promise<ChatTurn[]> {
+async function loadConversation(accountId: number, contactIgId: string, ctx: Ctx): Promise<(ChatTurn & { at: Date })[]> {
   const rows = await getDb()
-    .select({ direction: eventsLog.direction, text: eventsLog.text })
+    .select({ direction: eventsLog.direction, text: eventsLog.text, at: eventsLog.createdAt })
     .from(eventsLog)
     .where(
       and(
@@ -283,7 +365,7 @@ async function loadConversation(accountId: number, contactIgId: string, ctx: Ctx
     )
     .orderBy(desc(eventsLog.createdAt), desc(eventsLog.id))
     .limit(AI_HISTORY_LIMIT);
-  return rows.reverse().map((r) => ({ role: r.direction === "in" ? "user" : "model", text: r.text ?? "" }));
+  return rows.reverse().map((r) => ({ role: r.direction === "in" ? "user" : "model", text: r.text ?? "", at: r.at }));
 }
 
 // ---------------------------------------------------------------------------
