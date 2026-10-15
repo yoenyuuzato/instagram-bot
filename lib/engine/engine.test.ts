@@ -2,7 +2,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import type { Rule } from "@/lib/db/schema";
 import { countWords, normalizeForExact, normalizeText } from "./normalize";
-import { findMatchingRule, ruleMatches } from "./match";
+import { findMatchingRule, matchLength, ruleMatches } from "./match";
 import { isWithinDmWindow, isWithinPrivateReplyWindow } from "./window";
 import { signPayload, verifySignature } from "@/lib/webhook-signature";
 
@@ -89,4 +89,50 @@ test("jen krátká zpráva (maxWords)", () => {
   assert.ok(!ruleMatches(r, { type: "dm", text: "jaká je cena e-shopu s napojením" }));
   assert.ok(ruleMatches(rule({ triggerType: "dm", keywords: ["cena"] }), { type: "dm", text: "jaká je cena e-shopu s napojením" }));
   assert.equal(countWords("  Ahoj!!  👋 jak se máš ? "), 4);
+});
+
+test("delší shoda: při stejné specificity vyhrává delší klíčové slovo, pak nižší ID", () => {
+  const dm = (text: string) => ({ type: "dm" as const, text });
+  const rules = [
+    rule({ id: 1, triggerType: "dm", keywords: ["web"] }),
+    rule({ id: 2, triggerType: "dm", keywords: ["tvorba webu", "cena"] }),
+    rule({ id: 3, triggerType: "dm", keywords: ["Cena e-shopu"] }),
+  ];
+  assert.equal(findMatchingRule(rules, dm("Kolik stojí tvorba webu?"))?.id, 2);
+  // Diakritika a velikost písmen se v klíčovém slově i textu ignorují.
+  assert.equal(findMatchingRule(rules, dm("jaká je CENA E-SHOPU"))?.id, 3);
+  // Stejná délka shody → nižší ID.
+  const tie = [rule({ id: 5, triggerType: "dm", keywords: ["ahoj"] }), rule({ id: 4, triggerType: "dm", keywords: ["cena"] })];
+  assert.equal(findMatchingRule(tie, dm("ahoj, cena?"))?.id, 4);
+  // Specificity má přednost před délkou shody (exact > contains).
+  const spec = [rule({ id: 6, triggerType: "dm", keywords: ["tvorba webu"] }), rule({ id: 7, triggerType: "dm", keywords: ["web"], matchMode: "exact" })];
+  assert.equal(findMatchingRule(spec, dm("Web!"))?.id, 7);
+});
+
+test("delší shoda: „co je seo“ a „kolik stojí seo“ vyhrají nad „seo“", () => {
+  const dm = (text: string) => ({ type: "dm" as const, text });
+  const seo = rule({ id: 1, triggerType: "dm", keywords: ["seo"] });
+  assert.equal(findMatchingRule([seo, rule({ id: 2, triggerType: "dm", keywords: ["co je seo"] })], dm("Co je SEO?"))?.id, 2);
+  assert.equal(findMatchingRule([seo, rule({ id: 3, triggerType: "dm", keywords: ["kolik stojí seo"] })], dm("Kolik stojí SEO?"))?.id, 3);
+  // Kratší pravidlo dál funguje samo o sobě.
+  assert.equal(findMatchingRule([seo, rule({ id: 3, triggerType: "dm", keywords: ["kolik stojí seo"] })], dm("seo"))?.id, 1);
+});
+
+test("matchLength", () => {
+  const dm = (text: string) => ({ type: "dm" as const, text });
+  assert.equal(matchLength(rule({ triggerType: "dm", keywords: ["tvorba webu", "cena"] }), dm("tvorba webu a cena")), 11);
+  assert.equal(matchLength(rule({ triggerType: "dm", keywords: ["kolik stojí seo"] }), dm("KOLIK STOJÍ SEO?")), 15);
+  assert.equal(matchLength(rule({ triggerType: "dm", keywords: [] }), dm("cokoliv")), 0);
+  assert.equal(matchLength(rule({ triggerType: "dm", keywords: ["nic"] }), dm("cokoliv")), 0);
+  assert.equal(matchLength(rule({ triggerType: "dm", keywords: ["Chci"], matchMode: "exact" }), dm("chci!")), 4);
+});
+
+test("max_words: u delší zprávy se pravidlo nespustí", () => {
+  const dm = (text: string) => ({ type: "dm" as const, text });
+  const short = rule({ id: 1, triggerType: "dm", keywords: ["seo"], maxWords: 3 });
+  const long = "Ahoj, chtěl bych vědět, kolik stojí SEO pro e-shop";
+  assert.equal(findMatchingRule([short], dm("seo?"))?.id, 1);
+  assert.equal(findMatchingRule([short], dm(long)), null);
+  // Delší zprávu převezme pravidlo bez omezení, i když má vyšší ID.
+  assert.equal(findMatchingRule([short, rule({ id: 2, triggerType: "dm", keywords: ["seo"] })], dm(long))?.id, 2);
 });
