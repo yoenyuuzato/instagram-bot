@@ -1,0 +1,1 @@
+ALTER TABLE "rules" ADD COLUMN "notify_on_match" boolean DEFAULT false NOT NULL;

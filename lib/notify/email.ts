@@ -56,45 +56,40 @@ const esc = (s: string) => s.replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&
 const fmtTime = (d: Date) =>
   new Intl.DateTimeFormat("cs-CZ", { dateStyle: "medium", timeStyle: "short", timeZone: "Europe/Prague" }).format(d);
 
-export type LeadEmailInput = {
+/** "@username", nebo – když ho neznáme (DM webhook ho neposílá) – "IG ID 1234…". */
+export function contactDisplay(username: string | null | undefined, igScopedId: string) {
+  return username ? `@${username}` : `IG ID ${igScopedId}`;
+}
+
+export type HistoryItem = { role: "user" | "model"; text: string; at: Date };
+
+type Common = {
   to: string;
   accountUsername: string;
-  /** IG username kontaktu, pokud ho známe – jinak IG scoped ID. */
-  contactLabel: string;
-  hits: ContactHit[];
+  /** Výstup contactDisplay(). */
+  contact: string;
   message: string;
-  history: { role: "user" | "model"; text: string; at: Date }[];
+  history: HistoryItem[];
   at: Date;
 };
 
-export function buildLeadEmail(p: LeadEmailInput): Email {
-  const label = (h: ContactHit) => (h.type === "email" ? h.value : formatPhone(h.value));
-  const found = p.hits.map((h) => `${h.type === "email" ? "E-mail" : "Telefon"}: ${label(h)}`);
-  const who = (r: "user" | "model") => (r === "user" ? `@${p.contactLabel}` : `@${p.accountUsername} (bot)`);
+const LABEL = "padding:2px 12px 2px 0;color:#666;vertical-align:top";
 
+/** Společná kostra e-mailu: hlavička s údaji, bloky obsahu, historie konverzace, odkaz do inboxu. */
+function render(p: Common & { title: string; rows: [string, string][]; textBlocks: string[]; htmlBlocks: string[] }) {
+  const who = (r: HistoryItem["role"]) => (r === "user" ? p.contact : `@${p.accountUsername} (bot)`);
   const text = [
-    `Nový kontakt z Instagramu (@${p.accountUsername})`,
+    p.title,
     "",
-    `Od: @${p.contactLabel}`,
-    `Čas: ${fmtTime(p.at)}`,
-    ...found,
+    ...p.rows.map(([k, v]) => `${k}: ${v.replace(/<[^>]+>/g, "")}`),
     "",
-    "Zpráva:",
-    p.message,
-    "",
+    ...p.textBlocks,
     `Posledních ${p.history.length} zpráv konverzace:`,
     ...p.history.map((m) => `[${fmtTime(m.at)}] ${who(m.role)}: ${m.text}`),
     "",
     `Odpovědět: ${INBOX_URL}`,
   ].join("\n");
 
-  const contactHtml = p.hits
-    .map((h) => {
-      const v = esc(label(h));
-      const href = h.type === "email" ? `mailto:${esc(h.value)}` : `tel:${esc(h.value)}`;
-      return `<tr><td style="padding:2px 12px 2px 0;color:#666">${h.type === "email" ? "E-mail" : "Telefon"}</td><td><a href="${href}" style="font-weight:600">${v}</a></td></tr>`;
-    })
-    .join("");
   const historyHtml = p.history
     .map(
       (m) =>
@@ -103,27 +98,80 @@ export function buildLeadEmail(p: LeadEmailInput): Email {
         `<div style="white-space:pre-wrap">${esc(m.text)}</div></div>`,
     )
     .join("");
-
+  // Hodnoty v `rows` jsou už escapované HTML (kvůli odkazům mailto/tel).
   const html = `<div style="font-family:system-ui,-apple-system,sans-serif;font-size:14px;line-height:1.5;color:#111;max-width:600px">
-<h2 style="font-size:18px;margin:0 0 12px">Nový kontakt z IG: @${esc(p.contactLabel)}</h2>
+<h2 style="font-size:18px;margin:0 0 12px">${esc(p.title)}</h2>
 <table style="border-collapse:collapse;margin-bottom:12px">
-<tr><td style="padding:2px 12px 2px 0;color:#666">Účet</td><td>@${esc(p.accountUsername)}</td></tr>
-<tr><td style="padding:2px 12px 2px 0;color:#666">Čas</td><td>${esc(fmtTime(p.at))}</td></tr>
-${contactHtml}
+${p.rows.map(([k, v]) => `<tr><td style="${LABEL}">${esc(k)}</td><td>${v}</td></tr>`).join("\n")}
 </table>
-<p style="margin:0 0 4px;color:#666">Zpráva</p>
-<blockquote style="margin:0 0 16px;padding:8px 12px;border-left:3px solid #111;white-space:pre-wrap">${esc(p.message)}</blockquote>
+${p.htmlBlocks.join("\n")}
 <p style="margin:0 0 4px;color:#666">Posledních ${p.history.length} zpráv konverzace</p>
 ${historyHtml}
 <p style="margin-top:16px"><a href="${INBOX_URL}" style="display:inline-block;padding:8px 14px;background:#111;color:#fff;border-radius:6px;text-decoration:none">Otevřít Instagram Direct</a></p>
 </div>`;
+  return { text, html };
+}
 
+const quote = (label: string, body: string) =>
+  `<p style="margin:0 0 4px;color:#666">${esc(label)}</p>\n<blockquote style="margin:0 0 16px;padding:8px 12px;border-left:3px solid #111;white-space:pre-wrap">${esc(body)}</blockquote>`;
+
+export type LeadEmailInput = Common & { hits: ContactHit[] };
+
+export function buildLeadEmail(p: LeadEmailInput): Email {
+  const rows: [string, string][] = [
+    ["Účet", esc(`@${p.accountUsername}`)],
+    ["Od", esc(p.contact)],
+    ["Čas", esc(fmtTime(p.at))],
+    ...p.hits.map((h): [string, string] => {
+      const v = h.type === "email" ? h.value : formatPhone(h.value);
+      const href = h.type === "email" ? `mailto:${h.value}` : `tel:${h.value}`;
+      return [h.type === "email" ? "E-mail" : "Telefon", `<a href="${esc(href)}" style="font-weight:600">${esc(v)}</a>`];
+    }),
+  ];
+  const { text, html } = render({
+    ...p,
+    title: `Nový kontakt z IG: ${p.contact}`,
+    rows,
+    textBlocks: ["Zpráva:", p.message, ""],
+    htmlBlocks: [quote("Zpráva", p.message)],
+  });
   return {
     to: p.to,
-    subject: `Nový kontakt z IG: @${p.contactLabel}`,
+    subject: `Nový kontakt z IG: ${p.contact}`,
     text,
     html,
     // Odpověď z e-mailového klienta půjde rovnou leadovi.
     replyTo: p.hits.find((h) => h.type === "email")?.value,
   };
+}
+
+export const RULE_PROMISE = "Slib zákazníkovi: odpověď na IG do 2 dnů.";
+
+export type RuleEmailInput = Common & {
+  ruleName: string;
+  /** Co bot odpověděl; null = nic neodeslal (např. mimo 24h okno). */
+  botReply: string | null;
+  botReplyNote?: string;
+};
+
+export function buildRuleEmail(p: RuleEmailInput): Email {
+  const subject = `IG – ${p.ruleName}: ${p.contact}`;
+  const reply = p.botReply ?? `(bot nic neodeslal${p.botReplyNote ? ` – ${p.botReplyNote}` : ""})`;
+  const { text, html } = render({
+    ...p,
+    title: subject,
+    rows: [
+      ["Účet", esc(`@${p.accountUsername}`)],
+      ["Od", esc(p.contact)],
+      ["Pravidlo", esc(p.ruleName)],
+      ["Čas", esc(fmtTime(p.at))],
+    ],
+    textBlocks: [`>> ${RULE_PROMISE}`, "", "Zpráva zákazníka:", p.message, "", "Odpověď bota:", reply, ""],
+    htmlBlocks: [
+      `<p style="margin:0 0 16px;padding:10px 12px;border-radius:8px;background:#fef3c7;color:#78350f;font-weight:600">${esc(RULE_PROMISE)}</p>`,
+      quote("Zpráva zákazníka", p.message),
+      quote("Odpověď bota", reply),
+    ],
+  });
+  return { to: p.to, subject, text, html };
 }

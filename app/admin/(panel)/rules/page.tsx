@@ -54,6 +54,14 @@ export default async function RulesPage() {
                     <Link href={`/admin/rules/${rule.id}`} className="hover:underline">
                       {rule.name || `Pravidlo #${rule.id}`}
                     </Link>
+                    {rule.notifyOnMatch && (
+                      <span
+                        className="ml-2 inline-block rounded bg-amber-100 px-1.5 py-0.5 align-middle text-xs font-medium text-amber-800"
+                        title="Při spuštění pošle upozornění e-mailem"
+                      >
+                        ✉ upozornění
+                      </span>
+                    )}
                     {rule.postId && <div className="text-xs text-neutral-500">post {rule.postId}</div>}
                   </td>
                   <td>@{username}</td>

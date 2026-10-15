@@ -44,7 +44,7 @@ Instagram ──webhook──▶ /api/webhooks/instagram ──(after)──▶ 
 ### Datový model
 
 - **accounts** – `ig_user_id`, `username`, `access_token` (šifrovaně), `token_expires_at`, `active`, `ai_enabled`, `ai_system_prompt`, `ai_fallback_text`, `knowledge_url`, `knowledge_text`, `knowledge_updated_at`, `notify_email`
-- **rules** – `account_id`, `trigger_type` (`comment` \| `dm`), `keywords[]`, `match_mode` (`contains` \| `exact`), `post_id` (volitelné), `public_reply`, `dm_text`, `dm_button_url`, `dm_button_title`, `max_words` (jen krátká zpráva, `null` = vypnuto), `active`
+- **rules** – `account_id`, `trigger_type` (`comment` \| `dm`), `keywords[]`, `match_mode` (`contains` \| `exact`), `post_id` (volitelné), `public_reply`, `dm_text`, `dm_button_url`, `dm_button_title`, `max_words` (jen krátká zpráva, `null` = vypnuto), `notify_on_match`, `active`
 - **events_log** – příchozí webhooky i odchozí odpovědi: `direction` (in/out), `kind`, `status`, `dedup_key` (unikátní), `detail`, `payload`, `simulated`
 - **contacts** – `account_id` + `ig_scoped_id` (unikátní), `username`, `last_interaction_at` (poslední příchozí DM → 24h okno)
 
@@ -77,6 +77,15 @@ Instagram ──webhook──▶ /api/webhooks/instagram ──(after)──▶ 
 - **Nezdržuje odpověď:** upozornění se odesílají až po zpracování všech zpráv z webhooku (po odeslání DM), stále uvnitř `after()`.
 - **Bez `RESEND_API_KEY`** se upozornění jen zaloguje (`console.warn` + v Logu událostí jako přeskočené), nic nespadne.
 - **Test:** v `/admin/accounts` tlačítko **Poslat testovací e-mail** (pošle ukázkové upozornění). S výchozím odesílatelem `onboarding@resend.dev` Resend doručí jen na e-mail vlastníka Resend účtu – pro jiné adresáty ověřte doménu a nastavte `NOTIFY_FROM`.
+
+## Upozornění na spuštěné pravidlo
+
+- **Nastavení:** v pravidle zaškrtnout **Poslat upozornění e-mailem, když se pravidlo spustí** (`rules.notify_on_match`, výchozí vypnuto). V seznamu pravidel má takové pravidlo štítek **✉ upozornění**. E-mail jde na **E-mail pro upozornění** účtu.
+- **Kdy:** ostrá DM (ne simulace), která spustí takové pravidlo – typicky „chci mluvit s člověkem“ nebo záchytné pravidlo „bot nevěděl odpovědět“.
+- **E-mail:** předmět `IG – {název pravidla}: @username` (nebo `IG ID …`, když username neznáme), zpráva zákazníka, odpověď bota (nebo proč nic neodeslal), posledních 6 zpráv konverzace, čas, odkaz na Instagram Direct a připomínka **„Slib zákazníkovi: odpověď na IG do 2 dnů.“**
+- **Dedup:** max. 1 upozornění za 12 h na kontakt + pravidlo (řádky `rule_notify` v `events_log`), aby záchytné pravidlo nespamovalo.
+- **Lead má přednost:** když zpráva obsahuje e-mail/telefon a odejde upozornění na lead, upozornění na pravidlo se už neposílá – na jednu zprávu max. jeden e-mail. (Když byl lead se stejným údajem už ohlášen dřív, pošle se upozornění na pravidlo.)
+- **Nezdržuje odpověď:** stejně jako lead – až po odeslání odpovědí, uvnitř `after()`.
 
 ## Lokální spuštění
 

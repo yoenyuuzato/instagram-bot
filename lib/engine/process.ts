@@ -7,7 +7,7 @@ import * as ig from "@/lib/instagram";
 import { generateReply, type ChatTurn } from "@/lib/ai/gemini";
 import { DEFAULT_SYSTEM_PROMPT } from "@/lib/ai/prompt";
 import { detectContacts, type ContactHit } from "@/lib/notify/detect";
-import { buildLeadEmail, sendEmail } from "@/lib/notify/email";
+import { buildLeadEmail, buildRuleEmail, contactDisplay, sendEmail } from "@/lib/notify/email";
 import { findMatchingRule } from "./match";
 import { fillTemplate as fill } from "./template";
 import { isWithinDmWindow, isWithinPrivateReplyWindow } from "./window";
@@ -16,6 +16,8 @@ import type { ActionResult, AiInfo, CommentChangeValue, EventResult, MessagingEv
 /** Limity AI odpovědí na jeden kontakt. */
 export const AI_MIN_INTERVAL_MS = 10_000;
 export const AI_MAX_PER_HOUR = 30;
+/** Upozornění na spuštěné pravidlo max. 1× za tuto dobu na kontakt + pravidlo. */
+export const RULE_NOTIFY_WINDOW_MS = 12 * 3600_000;
 /** Kolik posledních zpráv konverzace jde do kontextu AI. */
 const AI_HISTORY_LIMIT = 6;
 
@@ -169,14 +171,18 @@ async function handleMessage(account: Account | null, accountIgId: string, msg: 
   // Příchozí DM otevírá (prodlužuje) 24h okno.
   const contact = await upsertContact(account.id, msg.sender.id, null, toDate(msg.timestamp, ctx.now));
 
-  // Lead: e-mail/telefon ve zprávě → upozornění (jen ostré zprávy, odesílá se až po odpovědi).
+  // Upozornění e-mailem (jen ostré zprávy, odesílá se až po odpovědích): lead (e-mail/telefon ve zprávě) má přednost,
+  // jinak pravidlo s notify_on_match. Pravidlo a odpověď se doplní níž, úloha je čte až při spuštění.
   const notifyTo = account.notifyEmail?.trim();
+  const matched: { rule: Rule | null; reply: ActionResult | null } = { rule: null, reply: null };
   if (notifyTo && !ctx.simulated) {
     const hits = detectContacts(text);
-    if (hits.length) {
-      const at = toDate(msg.timestamp, ctx.now);
-      ctx.deferred.push(() => notifyLead(account, contact, message.mid, text, hits, notifyTo, at, ctx));
-    }
+    const at = toDate(msg.timestamp, ctx.now);
+    const n = { account, contact, mid: message.mid, text, to: notifyTo, at };
+    ctx.deferred.push(async () => {
+      if (hits.length && (await notifyLead(n, hits, ctx))) return;
+      if (matched.rule?.notifyOnMatch) await notifyRule(n, matched.rule, matched.reply, ctx);
+    });
   }
 
   // Klíčová pravidla mají přednost, AI odpovídá jen na zbytek.
@@ -203,6 +209,8 @@ async function handleMessage(account: Account | null, accountIgId: string, msg: 
     }
   }
 
+  matched.rule = rule;
+  matched.reply = actions[0] ?? null;
   await finishIncoming(inId, "processed", null, rule.id);
   return { ...base, status: "processed", ruleId: rule.id, ruleName: rule.name, actions };
 }
@@ -286,20 +294,14 @@ async function aiReply(account: Account, contact: Contact, mid: string, ctx: Ctx
   return { kind, ...out, request: sent.request, mock: sent.mock, ai };
 }
 
+type NotifyInput = { account: Account; contact: Contact; mid: string; text: string; to: string; at: Date };
+
 /**
  * Upozornění na lead e-mailem. Dedup: 1× na kontakt + hodnotu (řádek `lead_notify` s dedup klíčem).
  * Když odeslání selže, dedup klíč se uvolní, takže se to zkusí znovu při další zprávě se stejným údajem.
+ * Vrací true, když se o odeslání pokusilo (pak už se neposílá upozornění na pravidlo).
  */
-async function notifyLead(
-  account: Account,
-  contact: Contact,
-  mid: string,
-  text: string,
-  hits: ContactHit[],
-  to: string,
-  at: Date,
-  ctx: Ctx,
-) {
+async function notifyLead({ account, contact, mid, text, to, at }: NotifyInput, hits: ContactHit[], ctx: Ctx) {
   const db = getDb();
   const claimed: { hit: ContactHit; id: number }[] = [];
   for (const hit of hits) {
@@ -319,14 +321,14 @@ async function notifyLead(
       .returning({ id: eventsLog.id });
     if (row) claimed.push({ hit, id: row.id });
   }
-  if (!claimed.length) return;
+  if (!claimed.length) return false;
 
   const history = await loadConversation(account.id, contact.igScopedId, ctx);
   const res = await sendEmail(
     buildLeadEmail({
       to,
       accountUsername: account.username,
-      contactLabel: contact.username ?? contact.igScopedId,
+      contact: contactDisplay(contact.username, contact.igScopedId),
       hits: claimed.map((c) => c.hit),
       message: text,
       history,
@@ -341,6 +343,71 @@ async function notifyLead(
       ...(res.ok ? {} : { dedupKey: null }),
     })
     .where(inArray(eventsLog.id, claimed.map((c) => c.id)));
+  return true;
+}
+
+/**
+ * Upozornění na spuštěné pravidlo (notify_on_match). Max. 1× za RULE_NOTIFY_WINDOW_MS na kontakt + pravidlo,
+ * aby "záchytné" pravidlo nespamovalo. Řádek `rule_notify` se založí hned; při souběhu vyhraje dřívější.
+ */
+async function notifyRule(
+  { account, contact, mid, text, to, at }: NotifyInput,
+  rule: Rule,
+  reply: ActionResult | null,
+  ctx: Ctx,
+) {
+  const db = getDb();
+  const ruleName = rule.name.trim() || `Pravidlo #${rule.id}`;
+  const [claim] = await db
+    .insert(eventsLog)
+    .values({
+      accountId: account.id,
+      ruleId: rule.id,
+      direction: "out",
+      kind: "rule_notify",
+      status: "pending",
+      igObjectId: mid,
+      contactIgId: contact.igScopedId,
+      text: ruleName,
+    })
+    .returning({ id: eventsLog.id });
+
+  const [recent] = await db
+    .select({ n: count() })
+    .from(eventsLog)
+    .where(
+      and(
+        eq(eventsLog.accountId, account.id),
+        eq(eventsLog.contactIgId, contact.igScopedId),
+        eq(eventsLog.ruleId, rule.id),
+        eq(eventsLog.kind, "rule_notify"),
+        inArray(eventsLog.status, ["pending", "sent"]),
+        lt(eventsLog.id, claim.id),
+        gt(eventsLog.createdAt, new Date(ctx.now.getTime() - RULE_NOTIFY_WINDOW_MS)),
+      ),
+    );
+  const finish = (status: "sent" | "failed" | "skipped", detail: string) =>
+    db.update(eventsLog).set({ status, detail }).where(eq(eventsLog.id, claim.id));
+  if (recent.n > 0) {
+    await finish("skipped", `Upozornění na toto pravidlo a kontakt už odešlo v posledních ${RULE_NOTIFY_WINDOW_MS / 3600_000} h`);
+    return;
+  }
+
+  const history = await loadConversation(account.id, contact.igScopedId, ctx);
+  const res = await sendEmail(
+    buildRuleEmail({
+      to,
+      accountUsername: account.username,
+      contact: contactDisplay(contact.username, contact.igScopedId),
+      ruleName,
+      message: text,
+      botReply: reply?.status === "sent" ? reply.text : null,
+      botReplyNote: reply ? reply.detail : "pravidlo nemá text DM",
+      history,
+      at,
+    }),
+  );
+  await finish(res.ok ? "sent" : res.skipped ? "skipped" : "failed", `→ ${to} · ${res.ok ? `Resend id=${res.id}` : res.error}`);
 }
 
 /** Posledních N zpráv konverzace s kontaktem (příchozí DM + úspěšně odeslané odpovědi), od nejstarší. */

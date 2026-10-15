@@ -1,11 +1,11 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { buildLeadEmail, INBOX_URL, notifyFrom, sendEmail } from "./email";
+import { buildLeadEmail, buildRuleEmail, contactDisplay, INBOX_URL, notifyFrom, RULE_PROMISE, sendEmail } from "./email";
 
 const input = {
   to: "obchod@firma.cz",
   accountUsername: "topprofitdesign",
-  contactLabel: "jana",
+  contact: "@jana",
   hits: [
     { type: "email" as const, value: "jana@example.com", raw: "jana@example.com" },
     { type: "phone" as const, value: "+420777123456", raw: "777 123 456" },
@@ -65,4 +65,24 @@ test("sendEmail: tvar požadavku na Resend", async () => {
     if (prevKey) process.env.RESEND_API_KEY = prevKey;
     else delete process.env.RESEND_API_KEY;
   }
+});
+
+test("contactDisplay: @username, jinak IG ID", () => {
+  assert.equal(contactDisplay("jana", "123"), "@jana");
+  assert.equal(contactDisplay(null, "17841400000000001"), "IG ID 17841400000000001");
+});
+
+test("buildRuleEmail: předmět s názvem pravidla, zpráva, odpověď bota, slib, historie", () => {
+  const base = { ...input, contact: "IG ID 999", ruleName: "Chci mluvit s člověkem" };
+  const e = buildRuleEmail({ ...base, botReply: "Jasně, ozve se ti kolega <do 2 dnů>." });
+  assert.equal(e.subject, "IG – Chci mluvit s člověkem: IG ID 999");
+  assert.equal(e.replyTo, undefined);
+  for (const s of [RULE_PROMISE, "Zpráva zákazníka:", input.message, "Odpověď bota:", "Jasně, ozve se ti kolega <do 2 dnů>.", "IG ID 999: Ahoj", INBOX_URL]) {
+    assert.ok(e.text.includes(s), s);
+  }
+  assert.ok(e.html.includes("Slib zákazníkovi: odpověď na IG do 2 dnů."));
+  assert.ok(e.html.includes("&lt;do 2 dnů&gt;"));
+
+  const none = buildRuleEmail({ ...base, botReply: null, botReplyNote: "Mimo 24h okno" });
+  assert.ok(none.text.includes("(bot nic neodeslal – Mimo 24h okno)"));
 });

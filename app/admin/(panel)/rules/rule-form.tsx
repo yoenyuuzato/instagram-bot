@@ -144,6 +144,17 @@ export function RuleForm({ rule, accounts }: { rule?: Rule; accounts: AccountOpt
         </div>
       </div>
 
+      <div>
+        <label className="flex items-center gap-2 text-sm">
+          <input type="checkbox" name="notifyOnMatch" defaultChecked={rule?.notifyOnMatch ?? false} />
+          Poslat upozornění e-mailem, když se pravidlo spustí
+        </label>
+        <p className="hint">
+          Jen u ostrých DM a když má účet vyplněný „E-mail pro upozornění“. Max. 1× za 12 h na kontakt a pravidlo; když zpráva
+          obsahuje e-mail/telefon, přijde jen upozornění na lead.
+        </p>
+      </div>
+
       <label className="flex items-center gap-2 text-sm">
         <input type="checkbox" name="active" defaultChecked={rule?.active ?? true} />
         Pravidlo je aktivní

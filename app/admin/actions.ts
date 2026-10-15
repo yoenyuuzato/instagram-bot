@@ -66,6 +66,7 @@ function parseRule(fd: FormData) {
     dmButtonUrl,
     dmButtonTitle: dmButtonUrl ? opt(fd, "dmButtonTitle") : null,
     maxWords: shortOnly ? maxWords : null,
+    notifyOnMatch: fd.get("notifyOnMatch") === "on",
     active: fd.get("active") === "on",
   } as const;
 
@@ -232,7 +233,7 @@ export async function saveNotifyEmailAction(_: FormState, fd: FormData): Promise
     buildLeadEmail({
       to: notifyEmail,
       accountUsername: account.username,
-      contactLabel: "testovaci_kontakt",
+      contact: "@testovaci_kontakt",
       hits: [
         { type: "email", value: "jana.novakova@example.com", raw: "jana.novakova@example.com" },
         { type: "phone", value: "+420777123456", raw: "777 123 456" },

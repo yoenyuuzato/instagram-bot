@@ -19,6 +19,7 @@ const rule = (over: Partial<Rule>): Rule => ({
   dmButtonUrl: null,
   dmButtonTitle: null,
   maxWords: null,
+  notifyOnMatch: false,
   active: true,
   createdAt: new Date(),
   updatedAt: new Date(),

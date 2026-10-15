@@ -55,6 +55,8 @@ export const rules = pgTable(
     dmButtonTitle: text("dm_button_title"),
     /** "Jen krátká zpráva": pravidlo platí jen pro texty s nejvýš tolika slovy (null = bez omezení). */
     maxWords: integer("max_words"),
+    /** Při spuštění pravidla (ostrá DM) poslat e-mail na accounts.notify_email. */
+    notifyOnMatch: boolean("notify_on_match").notNull().default(false),
     active: boolean("active").notNull().default(true),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
     updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
@@ -74,7 +76,7 @@ export const eventsLog = pgTable(
     ruleId: integer("rule_id").references(() => rules.id, { onDelete: "set null" }),
     direction: text("direction").$type<"in" | "out">().notNull(),
     kind: text("kind")
-      .$type<"comment" | "message" | "public_reply" | "private_reply" | "dm" | "ai_reply" | "lead_notify" | "webhook">()
+      .$type<"comment" | "message" | "public_reply" | "private_reply" | "dm" | "ai_reply" | "lead_notify" | "rule_notify" | "webhook">()
       .notNull(),
     status: text("status")
       .$type<"received" | "processed" | "ignored" | "pending" | "sent" | "failed" | "skipped">()
