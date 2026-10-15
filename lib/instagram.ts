@@ -17,7 +17,16 @@ export type GraphResult = {
   id?: string;
   request: GraphRequest;
   error?: string;
+  /** Chyba access tokenu (OAuthException, kód 190) – token vypršel, byl zneplatněn nebo odvolán. */
+  tokenError?: boolean;
 };
+
+export type GraphError = { message?: string; type?: string; code?: number };
+
+/** Kód 190 = neplatný/vypršelý access token (Graph API vrací typ OAuthException). */
+export function isTokenError(err: GraphError | undefined) {
+  return err?.code === 190;
+}
 
 type Options = { accessToken: string | null; forceMock?: boolean };
 
@@ -74,9 +83,17 @@ async function call(req: GraphRequest, opts: Options): Promise<GraphResult> {
       id?: string;
       message_id?: string;
       success?: boolean;
-      error?: { message?: string };
+      error?: GraphError;
     };
-    if (!res.ok) return { ok: false, mock: false, request: req, error: data.error?.message ?? `HTTP ${res.status}` };
+    if (!res.ok) {
+      return {
+        ok: false,
+        mock: false,
+        request: req,
+        error: data.error?.message ?? `HTTP ${res.status}`,
+        ...(isTokenError(data.error) ? { tokenError: true } : {}),
+      };
+    }
     return { ok: true, mock: false, id: data.id ?? data.message_id ?? (data.success ? "success" : undefined), request: req };
   } catch (e) {
     return { ok: false, mock: false, request: req, error: e instanceof Error ? e.message : String(e) };
@@ -139,4 +156,35 @@ export function setIceBreakers(igUserId: string, questions: string[], opts: Opti
     },
     opts,
   );
+}
+
+export type RefreshResult =
+  | { ok: true; accessToken: string; expiresAt: Date }
+  | { ok: false; error: string; tokenError?: boolean };
+
+/**
+ * Obnova long-lived tokenu (Instagram API with Instagram Login):
+ * GET https://graph.instagram.com/refresh_access_token?grant_type=ig_refresh_token&access_token=…
+ * Token musí být starý aspoň 24 h a nevypršelý; nový platí 60 dní od obnovy.
+ * Volá se vždy doopravdy (i v MOCK režimu) – nic neodesílá, jen prodlužuje platnost.
+ */
+export async function refreshAccessToken(accessToken: string, now = new Date(), fetchImpl: typeof fetch = fetch): Promise<RefreshResult> {
+  const url = new URL("https://graph.instagram.com/refresh_access_token");
+  url.searchParams.set("grant_type", "ig_refresh_token");
+  url.searchParams.set("access_token", accessToken);
+  try {
+    const res = await fetchImpl(url, { signal: AbortSignal.timeout(15_000) });
+    const data = (await res.json().catch(() => ({}))) as { access_token?: string; expires_in?: number; error?: GraphError };
+    if (!res.ok || data.error) {
+      return {
+        ok: false,
+        error: data.error?.message ?? `HTTP ${res.status}`,
+        ...(isTokenError(data.error) ? { tokenError: true } : {}),
+      };
+    }
+    if (!data.access_token || !(Number(data.expires_in) > 0)) return { ok: false, error: "Neplatná odpověď (chybí access_token/expires_in)" };
+    return { ok: true, accessToken: data.access_token, expiresAt: new Date(now.getTime() + Number(data.expires_in) * 1000) };
+  } catch (e) {
+    return { ok: false, error: e instanceof Error ? e.message : String(e) };
+  }
 }

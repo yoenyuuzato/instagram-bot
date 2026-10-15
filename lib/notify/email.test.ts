@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { buildLeadEmail, buildRuleEmail, contactDisplay, INBOX_URL, notifyFrom, RULE_PROMISE, sendEmail } from "./email";
+import { buildLeadEmail, buildRuleEmail, buildTokenEmail, contactDisplay, INBOX_URL, notifyFrom, RULE_PROMISE, sendEmail } from "./email";
 
 const input = {
   to: "obchod@firma.cz",
@@ -85,4 +85,35 @@ test("buildRuleEmail: předmět s názvem pravidla, zpráva, odpověď bota, sli
 
   const none = buildRuleEmail({ ...base, botReply: null, botReplyNote: "Mimo 24h okno" });
   assert.ok(none.text.includes("(bot nic neodeslal – Mimo 24h okno)"));
+});
+
+test("buildTokenEmail: chyba API – předmět, platnost, chyba, odkaz do adminu, escapování", () => {
+  const at = new Date("2026-10-15T08:00:00Z");
+  const e = buildTokenEmail({
+    to: "obchod@firma.cz",
+    accountUsername: "topprofitdesign",
+    reason: "api_error",
+    expiresAt: new Date("2026-10-18T08:00:00Z"),
+    error: "Session has expired <x>",
+    at,
+    adminUrl: "https://bot.example.com/admin/accounts",
+  });
+  assert.equal(e.subject, "Instagram odmítl access token – bot neodpovídá: @topprofitdesign");
+  assert.equal(e.to, "obchod@firma.cz");
+  for (const s of ["OAuthException, kód 190", "Platnost tokenu:", "(za 3 dny)", "Chyba: Session has expired <x>", "https://bot.example.com/admin/accounts"]) {
+    assert.ok(e.text.includes(s), s);
+  }
+  assert.ok(e.html.includes("Session has expired &lt;x&gt;"));
+  assert.ok(!e.text.includes("Posledních"), "bez historie konverzace");
+});
+
+test("buildTokenEmail: obnova selhala / brzy vyprší, bez adminUrl bez tlačítka", () => {
+  const at = new Date("2026-10-15T08:00:00Z");
+  const failed = buildTokenEmail({ to: "a@b.cz", accountUsername: "x", reason: "refresh_failed", expiresAt: null, error: "boom", at });
+  assert.equal(failed.subject, "Obnova Instagram tokenu selhala: @x");
+  assert.ok(failed.text.includes("Platnost tokenu: neznámá"));
+  assert.ok(!failed.html.includes("<a href"));
+  const expiring = buildTokenEmail({ to: "a@b.cz", accountUsername: "x", reason: "expiring", expiresAt: new Date("2026-10-14T08:00:00Z"), at });
+  assert.equal(expiring.subject, "Instagram token brzy vyprší: @x");
+  assert.ok(expiring.text.includes("už vypršel"));
 });

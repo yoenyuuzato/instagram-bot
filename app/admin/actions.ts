@@ -11,6 +11,7 @@ import { decrypt, encrypt } from "@/lib/crypto";
 import { crawlSite, normalizeStartUrl } from "@/lib/knowledge/crawl";
 import { buildLeadEmail, isValidEmail, sendEmail } from "@/lib/notify/email";
 import { MAX_ICE_BREAKERS, MAX_QUICK_REPLIES, QUICK_REPLY_MAX_CHARS, setIceBreakers } from "@/lib/instagram";
+import { refreshTokenNow } from "@/lib/tokens/service";
 
 export type FormState = { error?: string; ok?: string } | undefined;
 
@@ -297,4 +298,16 @@ export async function saveIceBreakersAction(_: FormState, fd: FormData): Promise
   if (!res.ok) return { error: `Uloženo, ale Instagram odmítl: ${res.error}` };
   const what = questions.length ? `Nastaveno ${questions.length} otázek` : "Ice breakers smazány";
   return { ok: res.mock ? `${what} – MOCK režim, na Instagram se nic neposlalo (INSTAGRAM_MOCK).` : `${what} na Instagramu.` };
+}
+
+/** „Obnovit teď“ – prodlouží long-lived token o 60 dní (Instagram vyžaduje token starší než 24 h a nevypršelý). */
+export async function refreshTokenAction(_: FormState, fd: FormData): Promise<FormState> {
+  await requireAdmin();
+  const id = Number(str(fd, "id"));
+  if (!Number.isInteger(id) || id <= 0) return { error: "Neplatný účet." };
+  const res = await refreshTokenNow(id);
+  revalidatePath("/admin/accounts");
+  if (!res.ok) return { error: `Obnova selhala: ${res.error}` };
+  const until = new Intl.DateTimeFormat("cs-CZ", { dateStyle: "medium", timeZone: "Europe/Prague" }).format(res.expiresAt);
+  return { ok: `Obnoveno, platí do ${until}.` };
 }

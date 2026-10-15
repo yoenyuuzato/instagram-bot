@@ -11,12 +11,28 @@ import { AiSettingsForm } from "./ai-settings-form";
 import { KnowledgeForm } from "./knowledge-form";
 import { NotifyForm } from "./notify-form";
 import { IceBreakersForm } from "./ice-breakers-form";
+import { TokenRefreshForm } from "./token-refresh-form";
+import { daysLeft, tokenState, type TokenState } from "@/lib/tokens/refresh";
 
 // Server Action "Načíst / Obnovit web" stahuje až 30 stránek.
 export const maxDuration = 60;
 
-function isExpired(d: Date | null) {
-  return !!d && d.getTime() < Date.now();
+const TOKEN_CLASS: Record<TokenState, string> = {
+  missing: "text-neutral-400",
+  unknown: "text-neutral-500",
+  expired: "text-red-600 font-medium",
+  warn: "text-red-600",
+  refresh: "text-amber-700",
+  ok: "",
+};
+
+function tokenNote(state: TokenState, days: number | null) {
+  if (state === "missing") return null;
+  if (state === "unknown") return "platnost neznámá – obnovou se doplní";
+  if (state === "expired") return "vypršel – vložte nový token";
+  if (days === null) return null;
+  if (days < 1) return "vyprší do 24 h";
+  return `vyprší za ${days} ${days === 1 ? "den" : days < 5 ? "dny" : "dní"}`;
 }
 
 export default async function AccountsPage() {
@@ -60,13 +76,19 @@ export default async function AccountsPage() {
             </thead>
             <tbody>
               {rows.map(({ account: a, ruleCount }) => {
-                const expired = isExpired(a.tokenExpiresAt);
+                const now = new Date();
+                const state = tokenState(!!a.accessToken, a.tokenExpiresAt, now);
+                const note = tokenNote(state, daysLeft(a.tokenExpiresAt, now));
                 return (
                   <tr key={a.id} className={a.active ? "" : "opacity-50"}>
                     <td className="font-medium">@{a.username}</td>
                     <td className="font-mono text-xs">{a.igUserId}</td>
                     <td>{a.accessToken ? "uložen (šifrovaně)" : <span className="text-neutral-400">chybí</span>}</td>
-                    <td className={expired ? "text-red-600" : ""}>{formatDate(a.tokenExpiresAt)}</td>
+                    <td className={TOKEN_CLASS[state]}>
+                      <div>{formatDate(a.tokenExpiresAt)}</div>
+                      {note && <div className="text-xs">{note}</div>}
+                      {a.accessToken && <TokenRefreshForm id={a.id} />}
+                    </td>
                     <td>{ruleCount}</td>
                     <td>{a.aiEnabled ? "zapnuto" : <span className="text-neutral-400">vypnuto</span>}</td>
                     <td>

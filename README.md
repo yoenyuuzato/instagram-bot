@@ -72,6 +72,16 @@ Instagram ──webhook──▶ /api/webhooks/instagram ──(after)──▶ 
 - **Znalostní báze z webu:** v `/admin/accounts` u účtu zadej URL webu → **Načíst / Obnovit web**. Crawler přečte `robots.txt` (respektuje `Disallow`/`Allow` a jeho `Sitemap:`), vezme URL ze `sitemap.xml` (i sitemap index), a když chybí, odkazy z homepage na stejnou doménu. Stáhne max. 30 stránek (10 s timeout, paralelně, celkem do ~45 s – akce má `maxDuration = 60`), odstraní `nav`, `footer`, `script`, `style` apod., opakované řádky (menu, cookie lišta) bere jen jednou, stránky ve stejném jazyce jako zadaná URL dá dopředu a spojí vše pod nadpisy `## URL — titulek` do max. ~60 000 znaků. Když má účet znalosti, AI odpovídá jen z nich a z promptu, ceny uvádí jen když jsou ve znalostech, a když odpověď nezná, řekne, že se ozve člověk, a požádá o e-mail. Obnova je ruční.
 - **Klíč:** zdarma v [Google AI Studio](https://aistudio.google.com/apikey). Free tier má limity požadavků za minutu/den – při překročení vrací 429 a použije se fallback.
 
+## Obnova Instagram tokenů
+
+- **Cron:** `vercel.json` spouští denně v 6:00 UTC `GET /api/cron/refresh-tokens`. Endpoint vyžaduje `Authorization: Bearer $CRON_SECRET` (Vercel ho posílá sám, když je `CRON_SECRET` nastaven v projektu); bez proměnné vrací 500, se špatnou hlavičkou 401.
+- **Obnova:** pro každý aktivní účet s tokenem, kterému platnost vyprší do 15 dní (nebo ji neznáme), se zavolá `GET https://graph.instagram.com/refresh_access_token?grant_type=ig_refresh_token&access_token=…` (Instagram API with Instagram Login – token musí být starší než 24 h a nevypršelý, nový platí 60 dní). Nový token se uloží šifrovaně spolu s `token_expires_at` (= teď + `expires_in`). Obnova běží doopravdy i v MOCK režimu – nic neodesílá.
+- **E-mail (Resend, stejná šablona jako upozornění na leady) na `notify_email` účtu**, když obnova selže, nebo token vyprší do 7 dní. Max. 1× za 20 h na účet a důvod.
+- **Chyba tokenu při odesílání odpovědi** (Graph API vrátí `OAuthException`, kód 190): okamžitě e-mail, max. 1× za 6 h na účet. Odesílá se po odpovědích z webhooku (v `after()`).
+- **Admin:** v `/admin/accounts` u účtu platnost tokenu, kolik dní zbývá (barevně) a tlačítko **Obnovit teď** (bez e-mailu).
+- **Log:** `events_log` – `token_refresh` (obnova OK/selhala) a `token_alert` (e-mail odeslán/přeskočen).
+- Logika: `lib/tokens/refresh.ts` (pravidla, bez DB), `lib/tokens/service.ts` (DB, e-maily), `lib/instagram.ts` (`refreshAccessToken`, `isTokenError`).
+
 ## Upozornění na leady (e-mail)
 
 - **Kdy:** každá příchozí ostrá DM (simulace ne) na účet s vyplněným **E-mailem pro upozornění** v `/admin/accounts`, která obsahuje e-mail nebo telefon (CZ/SK – `777 123 456`, `+420 777-123-456`, `00420…`, `+421 905 …`, `0905 …`). Platí bez ohledu na to, jestli odpověděla pravidla, AI nebo nikdo.

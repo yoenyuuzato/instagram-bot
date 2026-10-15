@@ -8,6 +8,7 @@ import { generateReply, type ChatTurn } from "@/lib/ai/gemini";
 import { DEFAULT_SYSTEM_PROMPT } from "@/lib/ai/prompt";
 import { detectContacts, type ContactHit } from "@/lib/notify/detect";
 import { buildLeadEmail, buildRuleEmail, contactDisplay, sendEmail } from "@/lib/notify/email";
+import { sendTokenAlert } from "@/lib/tokens/service";
 import { findMatchingRule } from "./match";
 import { fillTemplate as fill } from "./template";
 import { sleep, typingDelayMs } from "./typing";
@@ -308,6 +309,7 @@ async function aiReply(account: Account, contact: Contact, mid: string, ctx: Ctx
 
   await typing(text);
   const sent = await ig.sendDirectMessage(account.igUserId, contactIgId, { text }, { accessToken: tokenFor(account, ctx), forceMock: ctx.simulated });
+  watchToken(account, sent, ctx);
   const detail = [...aiDetail, sent.ok ? `${sent.mock ? "MOCK " : ""}id=${sent.id}` : `IG chyba: ${sent.error}`].filter(Boolean).join(" · ");
   const out = await finish(sent.ok ? "sent" : "failed", text, detail, { request: sent.request, ai });
   return { kind, ...out, request: sent.request, mock: sent.mock, ai };
@@ -549,6 +551,7 @@ async function sendOnce(
   if (!claim) return { kind, status: "skipped", text, detail: "Už odesláno (dedup)" };
 
   const res = await send();
+  watchToken(account, res, ctx);
   const status = res.ok ? "sent" : "failed";
   const detail = res.ok ? `${res.mock ? "MOCK " : ""}id=${res.id}` : res.error;
   await db
@@ -596,6 +599,16 @@ async function startTyping(account: Account, recipientId: string, ctx: Ctx): Pro
     const wait = typingDelayMs(text) - (Date.now() - started);
     if (wait > 0) await sleep(wait);
   };
+}
+
+/**
+ * Chyba tokenu (OAuthException 190) při odesílání → e-mail na notify_email (max. 1× za 6 h na účet).
+ * Jde do odložených úloh, aby nezdržel další odpovědi ze stejného webhooku.
+ */
+function watchToken(account: Account, res: ig.GraphResult, ctx: Ctx) {
+  if (!res.tokenError || ctx.simulated) return;
+  console.error(`[engine] @${account.username}: Instagram odmítl access token – ${res.error}`);
+  ctx.deferred.push(() => sendTokenAlert(account, "api_error", account.tokenExpiresAt, res.error ?? null, ctx.now));
 }
 
 function tokenFor(account: Account, ctx: Ctx) {

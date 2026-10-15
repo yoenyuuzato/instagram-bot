@@ -51,6 +51,7 @@ export async function sendEmail(email: Email): Promise<EmailResult> {
 
 // --- Šablony -------------------------------------------------------------------
 
+const unesc = (s: string) => s.replace(/&(amp|lt|gt|quot|#39);/g, (m) => ({ "&amp;": "&", "&lt;": "<", "&gt;": ">", "&quot;": '"', "&#39;": "'" })[m]!);
 const esc = (s: string) => s.replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c]!);
 
 const fmtTime = (d: Date) =>
@@ -75,29 +76,42 @@ type Common = {
 
 const LABEL = "padding:2px 12px 2px 0;color:#666;vertical-align:top";
 
-/** Společná kostra e-mailu: hlavička s údaji, bloky obsahu, historie konverzace, odkaz do inboxu. */
-function render(p: Common & { title: string; rows: [string, string][]; textBlocks: string[]; htmlBlocks: string[] }) {
-  const who = (r: HistoryItem["role"]) => (r === "user" ? p.contact : `@${p.accountUsername} (bot)`);
+type Cta = { url: string; label: string };
+
+/** Společná kostra e-mailu: hlavička s údaji, bloky obsahu, (volitelně) historie konverzace, tlačítko s odkazem. */
+function render(p: {
+  title: string;
+  rows: [string, string][];
+  textBlocks: string[];
+  htmlBlocks: string[];
+  history?: { items: HistoryItem[]; who: (r: HistoryItem["role"]) => string };
+  cta?: Cta | null;
+}) {
+  const h = p.history;
   const text = [
     p.title,
     "",
-    ...p.rows.map(([k, v]) => `${k}: ${v.replace(/<[^>]+>/g, "")}`),
+    ...p.rows.map(([k, v]) => `${k}: ${unesc(v.replace(/<[^>]+>/g, ""))}`),
     "",
     ...p.textBlocks,
-    `Posledních ${p.history.length} zpráv konverzace:`,
-    ...p.history.map((m) => `[${fmtTime(m.at)}] ${who(m.role)}: ${m.text}`),
-    "",
-    `Odpovědět: ${INBOX_URL}`,
+    ...(h ? [`Posledních ${h.items.length} zpráv konverzace:`, ...h.items.map((m) => `[${fmtTime(m.at)}] ${h.who(m.role)}: ${m.text}`), ""] : []),
+    ...(p.cta ? [`${p.cta.label}: ${p.cta.url}`] : []),
   ].join("\n");
 
-  const historyHtml = p.history
-    .map(
-      (m) =>
-        `<div style="margin:6px 0;padding:8px 10px;border-radius:8px;background:${m.role === "user" ? "#f3f4f6" : "#eef2ff"}">` +
-        `<div style="font-size:12px;color:#666">${esc(who(m.role))} · ${esc(fmtTime(m.at))}</div>` +
-        `<div style="white-space:pre-wrap">${esc(m.text)}</div></div>`,
-    )
-    .join("");
+  const historyHtml = h
+    ? `<p style="margin:0 0 4px;color:#666">Posledních ${h.items.length} zpráv konverzace</p>\n` +
+      h.items
+        .map(
+          (m) =>
+            `<div style="margin:6px 0;padding:8px 10px;border-radius:8px;background:${m.role === "user" ? "#f3f4f6" : "#eef2ff"}">` +
+            `<div style="font-size:12px;color:#666">${esc(h.who(m.role))} · ${esc(fmtTime(m.at))}</div>` +
+            `<div style="white-space:pre-wrap">${esc(m.text)}</div></div>`,
+        )
+        .join("")
+    : "";
+  const ctaHtml = p.cta
+    ? `<p style="margin-top:16px"><a href="${esc(p.cta.url)}" style="display:inline-block;padding:8px 14px;background:#111;color:#fff;border-radius:6px;text-decoration:none">${esc(p.cta.label)}</a></p>`
+    : "";
   // Hodnoty v `rows` jsou už escapované HTML (kvůli odkazům mailto/tel).
   const html = `<div style="font-family:system-ui,-apple-system,sans-serif;font-size:14px;line-height:1.5;color:#111;max-width:600px">
 <h2 style="font-size:18px;margin:0 0 12px">${esc(p.title)}</h2>
@@ -105,11 +119,16 @@ function render(p: Common & { title: string; rows: [string, string][]; textBlock
 ${p.rows.map(([k, v]) => `<tr><td style="${LABEL}">${esc(k)}</td><td>${v}</td></tr>`).join("\n")}
 </table>
 ${p.htmlBlocks.join("\n")}
-<p style="margin:0 0 4px;color:#666">Posledních ${p.history.length} zpráv konverzace</p>
 ${historyHtml}
-<p style="margin-top:16px"><a href="${INBOX_URL}" style="display:inline-block;padding:8px 14px;background:#111;color:#fff;border-radius:6px;text-decoration:none">Otevřít Instagram Direct</a></p>
+${ctaHtml}
 </div>`;
   return { text, html };
+}
+
+const INBOX_CTA: Cta = { url: INBOX_URL, label: "Otevřít Instagram Direct" };
+
+function conversation(p: Common) {
+  return { items: p.history, who: (r: HistoryItem["role"]) => (r === "user" ? p.contact : `@${p.accountUsername} (bot)`) };
 }
 
 const quote = (label: string, body: string) =>
@@ -129,7 +148,8 @@ export function buildLeadEmail(p: LeadEmailInput): Email {
     }),
   ];
   const { text, html } = render({
-    ...p,
+    history: conversation(p),
+    cta: INBOX_CTA,
     title: `Nový kontakt z IG: ${p.contact}`,
     rows,
     textBlocks: ["Zpráva:", p.message, ""],
@@ -158,7 +178,8 @@ export function buildRuleEmail(p: RuleEmailInput): Email {
   const subject = `IG – ${p.ruleName}: ${p.contact}`;
   const reply = p.botReply ?? `(bot nic neodeslal${p.botReplyNote ? ` – ${p.botReplyNote}` : ""})`;
   const { text, html } = render({
-    ...p,
+    history: conversation(p),
+    cta: INBOX_CTA,
     title: subject,
     rows: [
       ["Účet", esc(`@${p.accountUsername}`)],
@@ -174,4 +195,57 @@ export function buildRuleEmail(p: RuleEmailInput): Email {
     ],
   });
   return { to: p.to, subject, text, html };
+}
+
+// --- Upozornění na access token ---------------------------------------------------
+
+export type TokenAlertReason = "refresh_failed" | "expiring" | "api_error";
+
+export type TokenEmailInput = {
+  to: string;
+  accountUsername: string;
+  reason: TokenAlertReason;
+  expiresAt: Date | null;
+  /** Chybová hláška z Instagram API (obnova / odeslání odpovědi). */
+  error?: string | null;
+  at: Date;
+  /** Odkaz na /admin/accounts; bez něj se tlačítko vynechá. */
+  adminUrl?: string | null;
+};
+
+const TOKEN_TITLES: Record<TokenAlertReason, string> = {
+  refresh_failed: "Obnova Instagram tokenu selhala",
+  expiring: "Instagram token brzy vyprší",
+  api_error: "Instagram odmítl access token – bot neodpovídá",
+};
+
+function expiryText(expiresAt: Date | null, now: Date) {
+  if (!expiresAt) return "neznámá";
+  const days = Math.floor((expiresAt.getTime() - now.getTime()) / 86_400_000);
+  const rel = expiresAt.getTime() <= now.getTime() ? "už vypršel" : days < 1 ? "méně než 1 den" : `za ${days} ${days === 1 ? "den" : days < 5 ? "dny" : "dní"}`;
+  return `${fmtTime(expiresAt)} (${rel})`;
+}
+
+export function buildTokenEmail(p: TokenEmailInput): Email {
+  const title = `${TOKEN_TITLES[p.reason]}: @${p.accountUsername}`;
+  const what =
+    p.reason === "api_error"
+      ? "Instagram při odesílání odpovědi vrátil chybu tokenu (OAuthException, kód 190). Dokud token nevyměníte, bot na tomto účtu neodpovídá."
+      : p.reason === "refresh_failed"
+        ? "Automatická obnova tokenu se nepovedla. Zkuste v administraci „Obnovit teď“; pokud to nepomůže, vygenerujte nový token a vložte ho k účtu."
+        : "Token se nepodařilo včas prodloužit. Po vypršení bot přestane odpovídat – obnovte ho v administraci, případně vložte nový.";
+  const rows: [string, string][] = [
+    ["Účet", esc(`@${p.accountUsername}`)],
+    ["Platnost tokenu", esc(expiryText(p.expiresAt, p.at))],
+    ...(p.error ? [["Chyba", esc(p.error)] as [string, string]] : []),
+    ["Čas", esc(fmtTime(p.at))],
+  ];
+  const { text, html } = render({
+    title,
+    rows,
+    textBlocks: [what, ""],
+    htmlBlocks: [`<p style="margin:0 0 16px;padding:10px 12px;border-radius:8px;background:#fee2e2;color:#7f1d1d;font-weight:600">${esc(what)}</p>`],
+    cta: p.adminUrl ? { url: p.adminUrl, label: "Otevřít administraci účtů" } : null,
+  });
+  return { to: p.to, subject: title, text, html };
 }

@@ -80,7 +80,7 @@ export const eventsLog = pgTable(
     ruleId: integer("rule_id").references(() => rules.id, { onDelete: "set null" }),
     direction: text("direction").$type<"in" | "out">().notNull(),
     kind: text("kind")
-      .$type<"comment" | "message" | "public_reply" | "private_reply" | "dm" | "ai_reply" | "lead_notify" | "rule_notify" | "webhook">()
+      .$type<"comment" | "message" | "public_reply" | "private_reply" | "dm" | "ai_reply" | "lead_notify" | "rule_notify" | "token_refresh" | "token_alert" | "webhook">()
       .notNull(),
     status: text("status")
       .$type<"received" | "processed" | "ignored" | "pending" | "sent" | "failed" | "skipped">()
