@@ -3,7 +3,9 @@ import { processWebhookPayload } from "@/lib/engine";
 import type { WebhookPayload } from "@/lib/engine/types";
 import { verifySignature } from "@/lib/webhook-signature";
 
-export const maxDuration = 60;
+// after() běží jen do maxDuration. AI odpověď = až 2 volání Gemini po 20 s (2. jen při 429/5xx) + DB + Graph API,
+// a jeden webhook může nést víc zpráv zpracovávaných postupně – proto rezerva.
+export const maxDuration = 120;
 
 /** Verifikace webhooku při nastavení v Meta App Dashboard. */
 export function GET(request: NextRequest) {

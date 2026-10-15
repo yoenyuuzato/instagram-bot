@@ -3,7 +3,7 @@
  * https://ai.google.dev/api/generate-content
  */
 
-export const AI_TIMEOUT_MS = 8_000;
+export const AI_TIMEOUT_MS = 20_000;
 export const AI_MAX_ATTEMPTS = 2;
 export const AI_MAX_CHARS = 600;
 
@@ -28,6 +28,20 @@ Formát odpovědi:
 
 export function geminiModel() {
   return process.env.GEMINI_MODEL || "gemini-2.5-flash";
+}
+
+/**
+ * Co nejméně "přemýšlení" – výrazně snižuje latenci.
+ * Gemini 3+: `thinkingLevel` (nekombinovat s `thinkingBudget` – API vrací 400). Nejnižší úroveň, kterou umí všechny
+ * modely 3.x (včetně 3.8-flash), je "low"; modely s podporou "minimal" lze přepnout přes GEMINI_THINKING_LEVEL.
+ * Gemini 2.5: `thinkingBudget` – Flash/Flash-Lite jde vypnout (0), Pro má minimum 128.
+ */
+export function thinkingConfigFor(model: string): Record<string, unknown> | undefined {
+  const m = model.replace(/^models\//, "");
+  if (m.startsWith("gemini-2.5-pro")) return { thinkingBudget: 128 };
+  if (m.startsWith("gemini-2.5-flash")) return { thinkingBudget: 0 };
+  if (/^gemini-[3-9]/.test(m)) return { thinkingLevel: process.env.GEMINI_THINKING_LEVEL || "low" };
+  return undefined;
 }
 
 /** Gemini chce střídání rolí a poslední tah od uživatele – sloučíme sousední zprávy stejné role. */
@@ -86,14 +100,15 @@ async function callOnce(model: string, apiKey: string, body: unknown): Promise<s
       signal: AbortSignal.timeout(AI_TIMEOUT_MS),
     });
   } catch (e) {
+    // Timeout ani síťovou chybu neopakujeme – druhý pokus by se už nevešel do rozumné doby odpovědi.
     const timeout = e instanceof Error && (e.name === "TimeoutError" || e.name === "AbortError");
-    throw new RetryableError(timeout ? `Timeout ${AI_TIMEOUT_MS / 1000} s` : e instanceof Error ? e.message : String(e));
+    throw new Error(timeout ? `Timeout ${AI_TIMEOUT_MS / 1000} s` : e instanceof Error ? e.message : String(e));
   }
 
   const data = (await res.json().catch(() => ({}))) as GeminiResponse;
   if (!res.ok) {
     const msg = `HTTP ${res.status}: ${data.error?.message ?? res.statusText}`;
-    // 429 (kvóta free tieru) a 5xx zkusíme znovu, ostatní chyby jsou trvalé.
+    // Opakujeme jen 429 (kvóta free tieru) a 5xx.
     if (res.status === 429 || res.status >= 500) throw new RetryableError(msg);
     throw new Error(msg);
   }
@@ -105,7 +120,7 @@ async function callOnce(model: string, apiKey: string, body: unknown): Promise<s
     .map((p) => p.text ?? "")
     .join("")
     .trim();
-  if (!text) throw new RetryableError(`Prázdná odpověď (${candidate?.finishReason ?? "bez kandidáta"})`);
+  if (!text) throw new Error(`Prázdná odpověď (${candidate?.finishReason ?? "bez kandidáta"})`);
   return text;
 }
 
@@ -121,14 +136,15 @@ export async function generateReply(systemPrompt: string, history: ChatTurn[]): 
   const contents = buildContents(history);
   if (contents.at(-1)?.role !== "user") return result({ ok: false, attempts: 0, error: "Konverzace nekončí zprávou uživatele" });
 
+  const thinkingConfig = thinkingConfigFor(model);
   const body = {
     systemInstruction: { parts: [{ text: systemPrompt.trim() + OUTPUT_RULES }] },
     contents,
     generationConfig: {
       temperature: 0.6,
-      maxOutputTokens: 400,
-      // Flash modely 2.5 umí přemýšlení vypnout – rychlejší odpověď a tokeny nejdou na "thinking".
-      ...(model.startsWith("gemini-2.5-flash") ? { thinkingConfig: { thinkingBudget: 0 } } : {}),
+      // Limit zahrnuje i tokeny přemýšlení – nízký strop by odpověď useknul. Délku hlídá cleanReply.
+      maxOutputTokens: 1024,
+      ...(thinkingConfig ? { thinkingConfig } : {}),
     },
   };
 
@@ -137,7 +153,7 @@ export async function generateReply(systemPrompt: string, history: ChatTurn[]): 
     try {
       const text = cleanReply(await callOnce(model, apiKey, body));
       if (text) return result({ ok: true, text, attempts: attempt });
-      error = "Prázdná odpověď po vyčištění";
+      return result({ ok: false, attempts: attempt, error: "Prázdná odpověď po vyčištění" });
     } catch (e) {
       error = e instanceof Error ? e.message : String(e);
       if (!(e instanceof RetryableError)) return result({ ok: false, attempts: attempt, error });

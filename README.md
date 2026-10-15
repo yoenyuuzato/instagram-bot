@@ -30,7 +30,7 @@ Instagram ──webhook──▶ /api/webhooks/instagram ──(after)──▶ 
 | `lib/engine/match.ts` | Výběr pravidla. Priorita: pravidlo pro konkrétní post > přesná shoda > obsahuje > nejstarší. Pravidlo bez klíčových slov reaguje na vše. |
 | `lib/engine/window.ts` | 24h okno pro DM, 7denní okno pro private reply na komentář. |
 | `lib/engine/process.ts` | Zpracování payloadu: dedup, kontakty, match, akce, log. |
-| `lib/ai/gemini.ts` | Volání Gemini REST API (`generateContent`, bez SDK) – timeout 8 s, max. 2 pokusy, čištění markdownu, max. ~600 znaků. |
+| `lib/ai/gemini.ts` | Volání Gemini REST API (`generateContent`, bez SDK) – timeout 20 s, max. 2 pokusy (jen 429/5xx), minimální thinking, čištění markdownu, max. ~600 znaků. |
 | `lib/ai/prompt.ts` | Výchozí šablona system promptu (Top Profit Design). |
 | `lib/instagram.ts` | Wrapper nad Graph API (`replyToComment`, `sendPrivateReply`, `sendDirectMessage`). V MOCK režimu vrací jen popis requestu. |
 | `lib/crypto.ts` | AES-256-GCM šifrování access tokenů. |
@@ -51,14 +51,14 @@ Instagram ──webhook──▶ /api/webhooks/instagram ──(after)──▶ 
 - **Smyčky:** komentáře od vlastního účtu a DM echo (`is_echo`) se ignorují.
 - **24h okno:** odpověď na DM se pošle jen do 24 h od poslední zprávy uživatele (`contacts.last_interaction_at`), jinak se v logu označí jako přeskočená.
 - **Private reply:** DM na základě komentáře se posílá jako private reply (`recipient.comment_id`) – max. 1× na komentář a do 7 dní od komentáře. Nevyžaduje otevřené 24h okno.
-- **Proměnné:** v textech lze použít `{username}`.
+- **Proměnné:** v textech lze použít `{username}`. Když username chybí, dosadí se prázdný řetězec a uklidí se mezery před interpunkcí („Ahoj {username}! 👋“ → „Ahoj! 👋“).
 - **Tlačítko:** pokud má pravidlo `dm_button_url`, DM se pošle jako button template s `web_url` tlačítkem.
 
 ## AI odpovědi (Gemini)
 
 - **Kdy:** příchozí DM, které nesedí na žádné DM pravidlo, a účet má v `/admin/accounts` zapnuté **AI zapnuto**. Klíčová pravidla mají vždy přednost. Na komentáře AI neodpovídá.
 - **Kontext:** `ai_system_prompt` účtu (+ pevná pravidla: česky, bez markdownu, max. ~600 znaků) a posledních 6 zpráv konverzace s kontaktem z `events_log` (příchozí DM + odeslané odpovědi).
-- **Volání:** `POST https://generativelanguage.googleapis.com/v1beta/models/$GEMINI_MODEL:generateContent`, hlavička `x-goog-api-key`. Timeout 8 s na pokus, max. 2 pokusy (opakuje se jen timeout, 429 a 5xx). U `gemini-2.5-flash*` je vypnuté „thinking“ kvůli latenci.
+- **Volání:** `POST https://generativelanguage.googleapis.com/v1beta/models/$GEMINI_MODEL:generateContent`, hlavička `x-goog-api-key`. Timeout 20 s na pokus, max. 2 pokusy (opakuje se jen 429 a 5xx, timeout ne). Přemýšlení je kvůli latenci minimalizované: Gemini 3+ `thinkingConfig.thinkingLevel` (výchozí `low`, nejnižší úroveň u `gemini-3.8-flash`; přepsat jde přes `GEMINI_THINKING_LEVEL`, např. `minimal` u modelů, které ji podporují), Gemini 2.5 Flash `thinkingBudget: 0`. Webhook má `maxDuration = 120`, simulátor 60 s.
 - **Pojistky:** 24h okno, dedup (`out:ai_reply:<mid>`), rate limit na kontakt – max. 1 AI odpověď za 10 s a max. 30 za hodinu (přebytečné se v logu označí jako přeskočené).
 - **Selhání AI:** pošle se `ai_fallback_text`, nebo – když je prázdný – nic. Vše se loguje do `events_log` jako `ai_reply` s modelem, latencí, počtem pokusů a případnou chybou (`detail` + `payload.ai`).
 - **Test:** Simulátor → typ DM → text, který nesedí na pravidlo. Gemini se volá doopravdy, Instagram ne. Volba „Vynutit AI“ otestuje odpověď i u účtu s vypnutou AI.
@@ -98,6 +98,7 @@ Pak v administraci: **Účty** → přidat účet ručně (libovolné číselné
 | `INSTAGRAM_GRAPH_API_VERSION` | ne | výchozí `v23.0` |
 | `GEMINI_API_KEY` | pro AI | API klíč Google Gemini ([AI Studio](https://aistudio.google.com/apikey)) |
 | `GEMINI_MODEL` | ne | model Gemini, výchozí `gemini-2.5-flash` |
+| `GEMINI_THINKING_LEVEL` | ne | jen Gemini 3+: úroveň přemýšlení, výchozí `low` (`minimal` jen u modelů, které ji podporují) |
 
 Na Vercelu nastavte stejné proměnné v Project → Settings → Environment Variables (nebo `vercel env add`).
 

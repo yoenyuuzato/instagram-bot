@@ -7,6 +7,7 @@ import * as ig from "@/lib/instagram";
 import { generateReply, type ChatTurn } from "@/lib/ai/gemini";
 import { DEFAULT_SYSTEM_PROMPT } from "@/lib/ai/prompt";
 import { findMatchingRule } from "./match";
+import { fillTemplate as fill } from "./template";
 import { isWithinDmWindow, isWithinPrivateReplyWindow } from "./window";
 import type { ActionResult, AiInfo, CommentChangeValue, EventResult, MessagingEvent, WebhookPayload } from "./types";
 
@@ -419,9 +420,6 @@ function tokenFor(account: Account, ctx: Ctx) {
   return decrypt(account.accessToken);
 }
 
-function fill(template: string, vars: Record<string, string>) {
-  return template.replace(/\{(\w+)\}/g, (m, k: string) => (k in vars ? vars[k] : m));
-}
 
 /** Meta posílá čas v sekundách i v milisekundách podle typu události. */
 function toDate(t: number | undefined, fallback: Date) {

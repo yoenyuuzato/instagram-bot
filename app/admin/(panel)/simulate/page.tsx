@@ -5,6 +5,9 @@ import { accounts } from "@/lib/db/schema";
 import { DbError, PageHeader } from "../ui";
 import { SimulateForm } from "./simulate-form";
 
+// Platí i pro Server Action simulátoru – AI odpověď může trvat až ~40 s (timeout 20 s, 1 opakování).
+export const maxDuration = 60;
+
 export default async function SimulatePage() {
   await connection();
   let accs;
