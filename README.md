@@ -51,7 +51,7 @@ Instagram ──webhook──▶ /api/webhooks/instagram ──(after)──▶ 
 ### Pravidla chování
 
 - **Dedup / idempotence:** každý příchozí komentář/zpráva má unikátní `dedup_key` (`in:comment:<id>`, `in:message:<mid>`). Meta webhooky doručuje opakovaně – duplikát se nezpracuje. Každá odchozí akce si před odesláním „zabere“ řádek s klíčem `out:<akce>:<id>`, takže se ani při souběhu neodešle dvakrát.
-- **Smyčky:** komentáře od vlastního účtu a DM echo (`is_echo`) se ignorují.
+- **Smyčky:** komentáře od vlastního účtu se ignorují. DM echo (`is_echo`) zprávy, kterou poslal bot, se ignoruje; ruční zpráva spustí pauzu (viz Ruční převzetí).
 - **24h okno:** odpověď na DM se pošle jen do 24 h od poslední zprávy uživatele (`contacts.last_interaction_at`), jinak se v logu označí jako přeskočená.
 - **Private reply:** DM na základě komentáře se posílá jako private reply (`recipient.comment_id`) – max. 1× na komentář a do 7 dní od komentáře. Nevyžaduje otevřené 24h okno.
 - **Proměnné:** v textech lze použít `{username}`. Když username chybí, dosadí se prázdný řetězec a uklidí se mezery před interpunkcí („Ahoj {username}! 👋“ → „Ahoj! 👋“).
@@ -99,6 +99,16 @@ Instagram ──webhook──▶ /api/webhooks/instagram ──(after)──▶ 
 - **Dedup:** max. 1 upozornění za 12 h na kontakt + pravidlo (řádky `rule_notify` v `events_log`), aby záchytné pravidlo nespamovalo.
 - **Lead má přednost:** když zpráva obsahuje e-mail/telefon a odejde upozornění na lead, upozornění na pravidlo se už neposílá – na jednu zprávu max. jeden e-mail. (Když byl lead se stejným údajem už ohlášen dřív, pošle se upozornění na pravidlo.)
 - **Nezdržuje odpověď:** stejně jako lead – až po odeslání odpovědí, uvnitř `after()`.
+
+## Ruční převzetí konverzace (DM)
+
+- **Jak se pozná ruční odpověď:** každá zpráva odeslaná z účtu (botem i člověkem v aplikaci / Meta Business Suite) přijde jako webhook `messages` s `message.is_echo: true`, `sender.id` = náš účet, `recipient.id` = kontakt. Echo v Instagram API with Instagram Login obsahuje jen `mid`, `text`, `is_echo` – **`app_id` v něm není** (na rozdíl od Messengeru). Bot si proto ukládá `message_id` z odpovědi Send API (`{ recipient_id, message_id }`) do `events_log.ig_message_id`; echo s jiným `mid` = ruční odpověď. Když echo předběhne uložení `mid` (bot kontaktu právě odesílá), počká se až ~8 s; pokud odesílání pořád běží, bere se echo jako botovo.
+- **Pauza:** ruční odpověď nastaví `contacts.bot_paused_until = teď + accounts.human_pause_minutes` (výchozí 30, nastavení v `/admin/accounts`, 0 = nepozastavovat). Další ruční odpověď pauzu prodlouží, nikdy nezkrátí.
+- **Během pauzy** bot na DM kontaktu nereaguje (pravidla ani AI), příchozí zpráva je v logu „Pauza – odpovídá člověk“. Upozornění e-mailem na leady chodí dál. Komentáře pauza neřeší.
+- **Příkazy v ruční zprávě:** `#bot` = pauza se hned zruší, `#stop` = pauza natrvalo (`contacts.bot_paused_permanent`), dokud ji nezrušíte. Hledá se samostatné slovo, na velikosti písmen nezáleží. Zpráva s příkazem se jen zpracuje (do historie pro AI nejde).
+- **Log a historie:** ruční zprávy jsou v logu jako **Ruční odpověď** (`human_reply`) a jdou do kontextu AI jako odpovědi účtu.
+- **Admin:** `/admin/contacts` – kontakty s pauzou (do kdy / natrvalo) a poslední aktivní kontakty, tlačítka **Zapnout bota** (zruší pauzu) / **Vypnout bota** (pauza natrvalo).
+- **Webhook:** vyžaduje odběr pole `message_echoes` (bez něj echo nechodí a ruční převzetí nefunguje).
 
 ## Lokální spuštění
 
@@ -162,8 +172,8 @@ Použijeme **Instagram API with Instagram Login** (graph.instagram.com) – nepo
   - Callback URL: `https://<domena>/api/webhooks/instagram`
   - Verify token: hodnota `META_VERIFY_TOKEN`
   - Ověřit (Meta pošle GET s `hub.challenge`, endpoint ho vrátí)
-- [ ] Přihlásit odběr polí **`comments`**, **`messages`** a **`messaging_postbacks`** (kliky na ice breakers)
-- [ ] Pro každý připojený účet aktivovat odběr: `POST https://graph.instagram.com/v23.0/me/subscribed_apps?subscribed_fields=comments,messages` s jeho tokenem
+- [ ] Přihlásit odběr polí **`comments`**, **`messages`**, **`messaging_postbacks`** (kliky na ice breakers) a **`message_echoes`** (ruční převzetí)
+- [ ] Pro každý připojený účet aktivovat odběr: `POST https://graph.instagram.com/v23.0/me/subscribed_apps?subscribed_fields=comments,messages,messaging_postbacks,message_echoes` s jeho tokenem
 - [ ] Ověřit podpis: v logu se nesmí objevovat 401 `Invalid signature`
 
 ### 4. OAuth flow (Business Login for Instagram)

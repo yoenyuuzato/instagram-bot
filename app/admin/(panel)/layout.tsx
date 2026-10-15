@@ -7,6 +7,7 @@ const nav = [
   { href: "/admin", label: "Přehled" },
   { href: "/admin/rules", label: "Pravidla" },
   { href: "/admin/accounts", label: "Účty" },
+  { href: "/admin/contacts", label: "Kontakty" },
   { href: "/admin/events", label: "Log událostí" },
   { href: "/admin/simulate", label: "Simulátor" },
 ];

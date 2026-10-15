@@ -12,6 +12,7 @@ import { KnowledgeForm } from "./knowledge-form";
 import { NotifyForm } from "./notify-form";
 import { IceBreakersForm } from "./ice-breakers-form";
 import { TokenRefreshForm } from "./token-refresh-form";
+import { HumanPauseForm } from "./human-pause-form";
 import { daysLeft, tokenState, type TokenState } from "@/lib/tokens/refresh";
 
 // Server Action "Načíst / Obnovit web" stahuje až 30 stránek.
@@ -138,6 +139,7 @@ export default async function AccountsPage() {
               />
               <NotifyForm id={a.id} notifyEmail={a.notifyEmail ?? ""} />
               <IceBreakersForm id={a.id} questions={a.iceBreakers} />
+              <HumanPauseForm id={a.id} minutes={a.humanPauseMinutes} />
             </div>
           ))}
         </section>

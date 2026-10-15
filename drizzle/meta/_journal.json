@@ -43,6 +43,13 @@
       "when": 1792070873221,
       "tag": "0005_quick_replies_ice_breakers",
       "breakpoints": true
+    },
+    {
+      "idx": 6,
+      "version": "7",
+      "when": 1792080975102,
+      "tag": "0006_human_takeover",
+      "breakpoints": true
     }
   ]
 }

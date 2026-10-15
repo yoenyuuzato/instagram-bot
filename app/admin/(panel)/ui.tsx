@@ -48,6 +48,7 @@ export const kindLabels: Record<string, string> = {
   rule_notify: "Upozornění na pravidlo",
   token_refresh: "Obnova tokenu",
   token_alert: "Upozornění na token",
+  human_reply: "Ruční odpověď",
 };
 
 export function formatDate(d: Date | null | undefined) {

@@ -35,6 +35,8 @@ export const accounts = pgTable("accounts", {
   notifyEmail: text("notify_email"),
   /** Ice breakers – až 4 úvodní otázky v prázdném DM (nastavují se přes messenger_profile). */
   iceBreakers: text("ice_breakers").array().notNull().default([]),
+  /** Ruční odpověď člověka v DM pozastaví bota u kontaktu na tolik minut (0 = nepozastavovat). */
+  humanPauseMinutes: integer("human_pause_minutes").notNull().default(30),
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
   updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
 });
@@ -80,7 +82,7 @@ export const eventsLog = pgTable(
     ruleId: integer("rule_id").references(() => rules.id, { onDelete: "set null" }),
     direction: text("direction").$type<"in" | "out">().notNull(),
     kind: text("kind")
-      .$type<"comment" | "message" | "public_reply" | "private_reply" | "dm" | "ai_reply" | "lead_notify" | "rule_notify" | "token_refresh" | "token_alert" | "webhook">()
+      .$type<"comment" | "message" | "public_reply" | "private_reply" | "dm" | "ai_reply" | "lead_notify" | "rule_notify" | "token_refresh" | "token_alert" | "human_reply" | "webhook">()
       .notNull(),
     status: text("status")
       .$type<"received" | "processed" | "ignored" | "pending" | "sent" | "failed" | "skipped">()
@@ -88,13 +90,19 @@ export const eventsLog = pgTable(
     dedupKey: text("dedup_key").unique(),
     igObjectId: text("ig_object_id"),
     contactIgId: text("contact_ig_id"),
+    /** Mid zprávy, kterou odeslal bot (z odpovědi Send API) – podle něj se echo pozná jako vlastní, ne ruční. */
+    igMessageId: text("ig_message_id"),
     text: text("text"),
     detail: text("detail"),
     payload: jsonb("payload"),
     simulated: boolean("simulated").notNull().default(false),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
   },
-  (t) => [index("events_log_created_idx").on(t.createdAt), index("events_log_account_idx").on(t.accountId)],
+  (t) => [
+    index("events_log_created_idx").on(t.createdAt),
+    index("events_log_account_idx").on(t.accountId),
+    index("events_log_ig_message_idx").on(t.igMessageId),
+  ],
 );
 
 export const contacts = pgTable(
@@ -108,6 +116,10 @@ export const contacts = pgTable(
     username: text("username"),
     /** Poslední příchozí DM od uživatele – otevírá 24h okno pro standardní zprávy. */
     lastInteractionAt: timestamp("last_interaction_at", { withTimezone: true }),
+    /** Ruční převzetí: bot na DM tohoto kontaktu neodpovídá do tohoto času. */
+    botPausedUntil: timestamp("bot_paused_until", { withTimezone: true }),
+    /** Pauza natrvalo (#stop / Vypnout bota) – platí, dokud se nezruší. */
+    botPausedPermanent: boolean("bot_paused_permanent").notNull().default(false),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
     updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
   },

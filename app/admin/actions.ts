@@ -6,7 +6,7 @@ import { revalidatePath } from "next/cache";
 import { eq } from "drizzle-orm";
 import { checkPassword, createSessionToken, SESSION_COOKIE, SESSION_TTL_SECONDS, verifySessionToken } from "@/lib/auth";
 import { getDb } from "@/lib/db";
-import { accounts, rules } from "@/lib/db/schema";
+import { accounts, contacts, rules } from "@/lib/db/schema";
 import { decrypt, encrypt } from "@/lib/crypto";
 import { crawlSite, normalizeStartUrl } from "@/lib/knowledge/crawl";
 import { buildLeadEmail, isValidEmail, sendEmail } from "@/lib/notify/email";
@@ -310,4 +310,35 @@ export async function refreshTokenAction(_: FormState, fd: FormData): Promise<Fo
   if (!res.ok) return { error: `Obnova selhala: ${res.error}` };
   const until = new Intl.DateTimeFormat("cs-CZ", { dateStyle: "medium", timeZone: "Europe/Prague" }).format(res.expiresAt);
   return { ok: `Obnoveno, platí do ${until}.` };
+}
+
+// --- Ruční převzetí (human takeover) -------------------------------------------
+
+const MAX_HUMAN_PAUSE_MINUTES = 7 * 24 * 60;
+
+/** Na kolik minut ruční odpověď v DM pozastaví bota u kontaktu (0 = nepozastavovat). */
+export async function saveHumanPauseAction(_: FormState, fd: FormData): Promise<FormState> {
+  await requireAdmin();
+  const id = Number(str(fd, "id"));
+  if (!Number.isInteger(id) || id <= 0) return { error: "Neplatný účet." };
+  const minutes = Number(str(fd, "humanPauseMinutes"));
+  if (!Number.isInteger(minutes) || minutes < 0 || minutes > MAX_HUMAN_PAUSE_MINUTES) {
+    return { error: `Zadejte celé číslo 0–${MAX_HUMAN_PAUSE_MINUTES} minut.` };
+  }
+  await getDb().update(accounts).set({ humanPauseMinutes: minutes, updatedAt: new Date() }).where(eq(accounts.id, id));
+  revalidatePath("/admin/accounts");
+  return { ok: minutes ? `Uloženo – ruční odpověď pozastaví bota na ${minutes} min.` : "Uloženo – ruční odpověď bota nepozastaví." };
+}
+
+/** Tlačítko Zapnout bota (zruší pauzu) / Vypnout bota (pauza natrvalo) u kontaktu. */
+export async function setContactBotAction(fd: FormData) {
+  await requireAdmin();
+  const id = Number(fd.get("id"));
+  if (!Number.isInteger(id) || id <= 0) return;
+  const enable = fd.get("enable") === "true";
+  await getDb()
+    .update(contacts)
+    .set({ botPausedUntil: null, botPausedPermanent: !enable, updatedAt: new Date() })
+    .where(eq(contacts.id, id));
+  revalidatePath("/admin/contacts");
 }

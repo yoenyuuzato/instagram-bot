@@ -11,6 +11,7 @@ import { buildLeadEmail, buildRuleEmail, contactDisplay, sendEmail } from "@/lib
 import { sendTokenAlert } from "@/lib/tokens/service";
 import { findMatchingRule } from "./match";
 import { fillTemplate as fill } from "./template";
+import { isBotEcho, isBotPaused, nextPauseState, parseHumanCommand, PAUSE_LOG_DETAIL } from "./takeover";
 import { sleep, typingDelayMs } from "./typing";
 import { isWithinDmWindow, isWithinPrivateReplyWindow } from "./window";
 import type { ActionResult, AiInfo, CommentChangeValue, EventResult, MessagingEvent, WebhookPayload } from "./types";
@@ -158,9 +159,9 @@ async function handleMessage(account: Account | null, accountIgId: string, msg: 
   const text = message.quick_reply?.payload || message.text || "";
   const base = { kind: "message" as const, igObjectId: message.mid, accountIgId, text, actions: [] as ActionResult[] };
 
-  // Echo = zpráva odeslaná samotným účtem (i naším botem) – nelogujeme, jen ignorujeme.
+  // Echo = zpráva odeslaná samotným účtem – botem, nebo ručně člověkem (→ pauza bota u kontaktu).
   if (message.is_echo || msg.sender.id === accountIgId) {
-    return { ...base, status: "ignored", reason: "Echo vlastní zprávy" };
+    return handleEcho(account, msg, base, ctx);
   }
 
   const inId = await logIncoming({
@@ -200,6 +201,9 @@ async function handleMessage(account: Account | null, accountIgId: string, msg: 
     });
   }
 
+  // Ruční převzetí – odpovídá člověk, bot mlčí (upozornění na leady výše běží dál).
+  if (isBotPaused(contact, ctx.now)) return ignore(PAUSE_LOG_DETAIL);
+
   // Klíčová pravidla mají přednost, AI odpovídá jen na zbytek.
   const rule = findMatchingRule(await loadRules(account.id, "dm"), { type: "dm", text });
   if (!rule) {
@@ -233,6 +237,91 @@ async function handleMessage(account: Account | null, accountIgId: string, msg: 
 }
 
 /**
+ * Echo zprávy z našeho účtu. Botovy zprávy (mid uložený při odeslání) se ignorují. Ruční zpráva člověka
+ * pozastaví bota u kontaktu na accounts.human_pause_minutes; příkazy #bot / #stop pauzu zruší / nastaví natrvalo.
+ * Ruční zprávy se logují jako `human_reply` (běžné jako "sent" → jdou do historie pro AI, příkazy jako "processed").
+ */
+async function handleEcho(account: Account | null, msg: MessagingEvent, base: Omit<EventResult, "status">, ctx: Ctx): Promise<EventResult> {
+  const ignored = (reason: string): EventResult => ({ ...base, status: "ignored", reason });
+  const message = msg.message!;
+  const contactIgId = msg.recipient?.id;
+  if (!account || ctx.simulated) return ignored("Echo vlastní zprávy");
+  if (!contactIgId || contactIgId === account.igUserId) return ignored("Echo zprávy sobě");
+  if (message.is_deleted) return ignored("Echo smazané zprávy");
+
+  const db = getDb();
+  const sentByBot = await isBotEcho({
+    isSentByBot: async () => {
+      const [row] = await db
+        .select({ id: eventsLog.id })
+        .from(eventsLog)
+        .where(and(eq(eventsLog.accountId, account.id), eq(eventsLog.igMessageId, message.mid)))
+        .limit(1);
+      return !!row;
+    },
+    hasPendingSend: async () => {
+      const [row] = await db
+        .select({ id: eventsLog.id })
+        .from(eventsLog)
+        .where(
+          and(
+            eq(eventsLog.accountId, account.id),
+            eq(eventsLog.contactIgId, contactIgId),
+            eq(eventsLog.direction, "out"),
+            inArray(eventsLog.kind, ["dm", "private_reply", "ai_reply"]),
+            eq(eventsLog.status, "pending"),
+            eq(eventsLog.simulated, false),
+            gt(eventsLog.createdAt, new Date(Date.now() - 120_000)),
+          ),
+        )
+        .limit(1);
+      return !!row;
+    },
+    sleep,
+  });
+  if (sentByBot) return ignored("Echo zprávy bota");
+
+  const command = parseHumanCommand(message.text);
+  const [claim] = await db
+    .insert(eventsLog)
+    .values({
+      accountId: account.id,
+      direction: "out",
+      kind: "human_reply",
+      status: command ? "processed" : "sent",
+      dedupKey: `echo:${message.mid}`,
+      igObjectId: message.mid,
+      igMessageId: message.mid,
+      contactIgId,
+      text: message.text ?? "",
+      payload: msg,
+    })
+    .onConflictDoNothing({ target: eventsLog.dedupKey })
+    .returning({ id: eventsLog.id });
+  if (!claim) return { ...base, status: "duplicate", reason: "Echo už bylo zpracováno" };
+
+  const contact = await upsertContact(account.id, contactIgId, null, null);
+  const next = nextPauseState(contact, command, account.humanPauseMinutes, ctx.now);
+  if (next) {
+    await db
+      .update(contacts)
+      .set({ ...next, updatedAt: new Date() })
+      .where(eq(contacts.id, contact.id));
+  }
+  const state = next ?? contact;
+  const detail =
+    command === "resume"
+      ? "#bot – pauza zrušena, bot odpovídá"
+      : state.botPausedPermanent
+        ? `${command === "stop" ? "#stop – " : "Ruční odpověď – "}bot pozastaven natrvalo`
+        : state.botPausedUntil && state.botPausedUntil > ctx.now
+          ? `Ruční odpověď – bot pozastaven do ${formatPragueTime(state.botPausedUntil)}`
+          : "Ruční odpověď – automatická pauza je vypnutá";
+  await db.update(eventsLog).set({ detail }).where(eq(eventsLog.id, claim.id));
+  return { ...base, status: "processed", reason: detail };
+}
+
+/**
  * AI odpověď na DM bez pravidla: 24h okno → dedup claim → rate limit → Gemini → odeslání.
  * Když AI selže, pošle se `ai_fallback_text` (pokud je vyplněný), jinak nic.
  */
@@ -260,10 +349,10 @@ async function aiReply(account: Account, contact: Contact, mid: string, ctx: Ctx
     .returning({ id: eventsLog.id });
   if (!claim) return { kind, status: "skipped", text: "", detail: "Už odesláno (dedup)" };
 
-  const finish = async (status: "sent" | "failed" | "skipped", text: string, detail: string, payload?: unknown) => {
+  const finish = async (status: "sent" | "failed" | "skipped", text: string, detail: string, payload?: unknown, igMessageId: string | null = null) => {
     await db
       .update(eventsLog)
-      .set({ status, text, detail, payload: payload ?? null })
+      .set({ status, text, detail, payload: payload ?? null, igMessageId })
       .where(eq(eventsLog.id, claim.id));
     return { status, text, detail };
   };
@@ -311,7 +400,7 @@ async function aiReply(account: Account, contact: Contact, mid: string, ctx: Ctx
   const sent = await ig.sendDirectMessage(account.igUserId, contactIgId, { text }, { accessToken: tokenFor(account, ctx), forceMock: ctx.simulated });
   watchToken(account, sent, ctx);
   const detail = [...aiDetail, sent.ok ? `${sent.mock ? "MOCK " : ""}id=${sent.id}` : `IG chyba: ${sent.error}`].filter(Boolean).join(" · ");
-  const out = await finish(sent.ok ? "sent" : "failed", text, detail, { request: sent.request, ai });
+  const out = await finish(sent.ok ? "sent" : "failed", text, detail, { request: sent.request, ai }, sentMid(kind, sent));
   return { kind, ...out, request: sent.request, mock: sent.mock, ai };
 }
 
@@ -431,7 +520,7 @@ async function notifyRule(
   await finish(res.ok ? "sent" : res.skipped ? "skipped" : "failed", `→ ${to} · ${res.ok ? `Resend id=${res.id}` : res.error}`);
 }
 
-/** Posledních N zpráv konverzace s kontaktem (příchozí DM + úspěšně odeslané odpovědi), od nejstarší. */
+/** Posledních N zpráv konverzace s kontaktem (příchozí DM + úspěšně odeslané odpovědi bota i člověka), od nejstarší. */
 async function loadConversation(accountId: number, contactIgId: string, ctx: Ctx): Promise<(ChatTurn & { at: Date })[]> {
   const rows = await getDb()
     .select({ direction: eventsLog.direction, text: eventsLog.text, at: eventsLog.createdAt })
@@ -445,7 +534,7 @@ async function loadConversation(accountId: number, contactIgId: string, ctx: Ctx
           and(eq(eventsLog.direction, "in"), eq(eventsLog.kind, "message")),
           and(
             eq(eventsLog.direction, "out"),
-            inArray(eventsLog.kind, ["dm", "private_reply", "ai_reply"]),
+            inArray(eventsLog.kind, ["dm", "private_reply", "ai_reply", "human_reply"]),
             eq(eventsLog.status, "sent"),
           ),
         ),
@@ -556,7 +645,7 @@ async function sendOnce(
   const detail = res.ok ? `${res.mock ? "MOCK " : ""}id=${res.id}` : res.error;
   await db
     .update(eventsLog)
-    .set({ status, detail, payload: res.request })
+    .set({ status, detail, payload: res.request, igMessageId: sentMid(kind, res) })
     .where(eq(eventsLog.id, claim.id));
   return { kind, status, text, detail, request: res.request, mock: res.mock };
 }
@@ -611,11 +700,20 @@ function watchToken(account: Account, res: ig.GraphResult, ctx: Ctx) {
   ctx.deferred.push(() => sendTokenAlert(account, "api_error", account.tokenExpiresAt, res.error ?? null, ctx.now));
 }
 
+/** Mid odeslané DM (Send API vrací message_id) – podle něj se pozná echo vlastní zprávy. */
+function sentMid(kind: ActionResult["kind"], res: ig.GraphResult) {
+  return kind !== "public_reply" && res.ok && res.id ? res.id : null;
+}
+
 function tokenFor(account: Account, ctx: Ctx) {
   if (ctx.simulated || env.instagramMock || !account.accessToken) return null;
   return decrypt(account.accessToken);
 }
 
+
+function formatPragueTime(d: Date) {
+  return new Intl.DateTimeFormat("cs-CZ", { dateStyle: "short", timeStyle: "short", timeZone: "Europe/Prague" }).format(d);
+}
 
 /** Meta posílá čas v sekundách i v milisekundách podle typu události. */
 function toDate(t: number | undefined, fallback: Date) {
