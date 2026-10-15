@@ -23,13 +23,28 @@ export function ruleMatches(rule: Rule, event: IncomingEvent): boolean {
   return keywords.some((k) => text.includes(normalizeText(k)));
 }
 
-/** Specifičtější pravidla mají přednost: konkrétní post > exact > contains > starší. */
+/**
+ * Délka shodujícího se klíčového slova (normalizovaného). U contains nejdelší klíčové slovo obsažené v textu,
+ * u exact délka shodného klíčového slova. Pravidlo bez klíčových slov (nebo bez shody) = 0.
+ */
+export function matchLength(rule: Rule, event: IncomingEvent): number {
+  const keywords = rule.keywords.map((k) => k.trim()).filter(Boolean);
+  if (rule.matchMode === "exact") {
+    const text = normalizeForExact(event.text);
+    return keywords.map(normalizeForExact).some((k) => k === text) ? text.length : 0;
+  }
+  const text = normalizeText(event.text);
+  return Math.max(0, ...keywords.map(normalizeText).filter((k) => text.includes(k)).map((k) => k.length));
+}
+
+/** Specifičtější pravidla mají přednost: konkrétní post > exact > contains > delší shoda > starší. */
 function specificity(rule: Rule) {
   return (rule.postId ? 4 : 0) + (rule.matchMode === "exact" ? 2 : 0) + (rule.keywords.length > 0 ? 1 : 0);
 }
 
 export function findMatchingRule(rules: Rule[], event: IncomingEvent): Rule | null {
   const candidates = rules.filter((r) => ruleMatches(r, event));
-  candidates.sort((a, b) => specificity(b) - specificity(a) || a.id - b.id);
+  const len = new Map(candidates.map((r) => [r.id, matchLength(r, event)]));
+  candidates.sort((a, b) => specificity(b) - specificity(a) || len.get(b.id)! - len.get(a.id)! || a.id - b.id);
   return candidates[0] ?? null;
 }
