@@ -5,7 +5,9 @@ import { accounts, rules } from "@/lib/db/schema";
 import { deleteAccountAction, toggleAccountAction } from "../../actions";
 import { ConfirmButton } from "../confirm-button";
 import { DbError, formatDate, PageHeader } from "../ui";
+import { DEFAULT_SYSTEM_PROMPT } from "@/lib/ai/prompt";
 import { AccountForm } from "./account-form";
+import { AiSettingsForm } from "./ai-settings-form";
 
 function isExpired(d: Date | null) {
   return !!d && d.getTime() < Date.now();
@@ -45,6 +47,7 @@ export default async function AccountsPage() {
                 <th>Token</th>
                 <th>Platnost tokenu</th>
                 <th>Pravidla</th>
+                <th>AI</th>
                 <th>Stav</th>
                 <th />
               </tr>
@@ -59,6 +62,7 @@ export default async function AccountsPage() {
                     <td>{a.accessToken ? "uložen (šifrovaně)" : <span className="text-neutral-400">chybí</span>}</td>
                     <td className={expired ? "text-red-600" : ""}>{formatDate(a.tokenExpiresAt)}</td>
                     <td>{ruleCount}</td>
+                    <td>{a.aiEnabled ? "zapnuto" : <span className="text-neutral-400">vypnuto</span>}</td>
                     <td>
                       <form action={toggleAccountAction}>
                         <input type="hidden" name="id" value={a.id} />
@@ -79,6 +83,27 @@ export default async function AccountsPage() {
           </table>
         )}
       </div>
+      {rows.length > 0 && (
+        <section className="mb-6 space-y-4">
+          <div>
+            <h2 className="font-medium">AI odpovědi (Google Gemini)</h2>
+            <p className="hint max-w-2xl">
+              AI odpovídá jen na DM, které nesedí na žádné pravidlo – klíčová pravidla mají vždy přednost. Platí 24h okno a limit 1
+              odpověď na kontakt za 10 s, max. 30 za hodinu. Vyzkoušet bez odeslání na Instagram jde v Simulátoru.
+            </p>
+          </div>
+          {rows.map(({ account: a }) => (
+            <AiSettingsForm
+              key={a.id}
+              id={a.id}
+              username={a.username}
+              aiEnabled={a.aiEnabled}
+              aiSystemPrompt={a.aiSystemPrompt ?? DEFAULT_SYSTEM_PROMPT}
+              aiFallbackText={a.aiFallbackText ?? ""}
+            />
+          ))}
+        </section>
+      )}
       <AccountForm />
     </>
   );

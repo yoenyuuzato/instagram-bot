@@ -22,6 +22,11 @@ export const accounts = pgTable("accounts", {
   accessToken: text("access_token"),
   tokenExpiresAt: timestamp("token_expires_at", { withTimezone: true }),
   active: boolean("active").notNull().default(true),
+  /** AI odpovědi (Gemini) na DM, které nesedí na žádné pravidlo. */
+  aiEnabled: boolean("ai_enabled").notNull().default(false),
+  aiSystemPrompt: text("ai_system_prompt"),
+  /** Pošle se, když AI selže. Prázdné = při chybě se neodpoví nic. */
+  aiFallbackText: text("ai_fallback_text"),
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
   updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
 });
@@ -61,7 +66,7 @@ export const eventsLog = pgTable(
     ruleId: integer("rule_id").references(() => rules.id, { onDelete: "set null" }),
     direction: text("direction").$type<"in" | "out">().notNull(),
     kind: text("kind")
-      .$type<"comment" | "message" | "public_reply" | "private_reply" | "dm" | "webhook">()
+      .$type<"comment" | "message" | "public_reply" | "private_reply" | "dm" | "ai_reply" | "webhook">()
       .notNull(),
     status: text("status")
       .$type<"received" | "processed" | "ignored" | "pending" | "sent" | "failed" | "skipped">()

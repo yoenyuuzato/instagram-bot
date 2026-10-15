@@ -80,6 +80,18 @@ export function SimulateForm({ accounts }: { accounts: { id: number; username: s
             <p className="hint">Test 24h / 7d okna.</p>
           </div>
         </div>
+        {type === "dm" && (
+          <div>
+            <label className="flex items-center gap-2 text-sm">
+              <input type="checkbox" name="forceAi" />
+              Vynutit AI odpověď (i když je u účtu vypnutá)
+            </label>
+            <p className="hint">
+              DM bez pravidla odpoví AI (Gemini se volá doopravdy, Instagram ne). Pro test konverzace nechte stejné ID odesílatele a
+              mezi zprávami počkejte 10 s (rate limit).
+            </p>
+          </div>
+        )}
         {state?.error && <p className="text-sm text-red-600">{state.error}</p>}
         <button className="btn" disabled={pending}>
           {pending ? "Zpracovávám…" : "Odeslat simulovaný webhook"}
@@ -109,6 +121,13 @@ export function SimulateForm({ accounts }: { accounts: { id: number; username: s
                   <StatusBadge status={a.status} />
                 </div>
                 <p className="text-sm whitespace-pre-wrap">{a.text}</p>
+                {a.ai && (
+                  <p className="hint">
+                    {a.ai.model} · {a.ai.latencyMs} ms · pokusů {a.ai.attempts}
+                    {a.ai.fallback && " · poslán fallback"}
+                  </p>
+                )}
+                {a.ai?.error && <p className="text-sm text-red-600">AI chyba: {a.ai.error}</p>}
                 {a.detail && <p className="hint">{a.detail}</p>}
                 {a.request && (
                   <pre className="mt-2 overflow-x-auto rounded bg-neutral-50 p-2 font-mono text-xs">

@@ -83,7 +83,8 @@ export async function simulateAction(_: SimulateState, fd: FormData): Promise<Si
   const signatureValid = secret ? verifySignature(raw, signature, secret) : null;
 
   try {
-    const results = await processWebhookPayload(JSON.parse(raw), { simulated: true });
+    const forceAi = type === "dm" && fd.get("forceAi") === "on";
+    const results = await processWebhookPayload(JSON.parse(raw), { simulated: true, forceAi });
     revalidatePath("/admin/events");
     return { payload, signature, signatureValid, results };
   } catch (e) {

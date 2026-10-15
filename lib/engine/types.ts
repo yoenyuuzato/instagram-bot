@@ -25,13 +25,23 @@ export type WebhookPayload = {
   }>;
 };
 
+export type AiInfo = {
+  model: string;
+  latencyMs: number;
+  attempts: number;
+  error?: string;
+  /** Místo AI odpovědi se poslal fallback text účtu. */
+  fallback?: boolean;
+};
+
 export type ActionResult = {
-  kind: "public_reply" | "private_reply" | "dm";
+  kind: "public_reply" | "private_reply" | "dm" | "ai_reply";
   status: "sent" | "failed" | "skipped";
   text: string;
   detail?: string;
   request?: { method: string; path: string; body: unknown };
   mock?: boolean;
+  ai?: AiInfo;
 };
 
 export type EventResult = {

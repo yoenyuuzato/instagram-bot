@@ -43,6 +43,7 @@ export const kindLabels: Record<string, string> = {
   public_reply: "Veřejná odpověď",
   private_reply: "Private reply",
   dm: "DM odpověď",
+  ai_reply: "AI odpověď",
 };
 
 export function formatDate(d: Date | null | undefined) {

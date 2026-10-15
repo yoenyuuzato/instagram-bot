@@ -145,3 +145,19 @@ export async function deleteAccountAction(fd: FormData) {
   await getDb().delete(accounts).where(eq(accounts.id, Number(fd.get("id"))));
   revalidatePath("/admin/accounts");
 }
+
+export async function saveAccountAiAction(_: FormState, fd: FormData): Promise<FormState> {
+  await requireAdmin();
+  const id = Number(str(fd, "id"));
+  if (!Number.isInteger(id) || id <= 0) return { error: "Neplatný účet." };
+  const aiEnabled = fd.get("aiEnabled") === "on";
+  const aiSystemPrompt = opt(fd, "aiSystemPrompt");
+  if (aiEnabled && !aiSystemPrompt) return { error: "Pro zapnutí AI vyplňte system prompt." };
+
+  await getDb()
+    .update(accounts)
+    .set({ aiEnabled, aiSystemPrompt, aiFallbackText: opt(fd, "aiFallbackText"), updatedAt: new Date() })
+    .where(eq(accounts.id, id));
+  revalidatePath("/admin/accounts");
+  return { ok: aiEnabled ? "Uloženo – AI odpovědi jsou zapnuté." : "Uloženo – AI odpovědi jsou vypnuté." };
+}

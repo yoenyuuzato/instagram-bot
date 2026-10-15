@@ -1,16 +1,26 @@
-import { and, eq, sql } from "drizzle-orm";
+import { and, count, desc, eq, gt, inArray, lt, or, sql } from "drizzle-orm";
 import { getDb } from "@/lib/db";
-import { accounts, contacts, eventsLog, rules, type Account, type Rule } from "@/lib/db/schema";
+import { accounts, contacts, eventsLog, rules, type Account, type Contact, type Rule } from "@/lib/db/schema";
 import { decrypt } from "@/lib/crypto";
 import { env } from "@/lib/env";
 import * as ig from "@/lib/instagram";
+import { generateReply, type ChatTurn } from "@/lib/ai/gemini";
+import { DEFAULT_SYSTEM_PROMPT } from "@/lib/ai/prompt";
 import { findMatchingRule } from "./match";
 import { isWithinDmWindow, isWithinPrivateReplyWindow } from "./window";
-import type { ActionResult, CommentChangeValue, EventResult, MessagingEvent, WebhookPayload } from "./types";
+import type { ActionResult, AiInfo, CommentChangeValue, EventResult, MessagingEvent, WebhookPayload } from "./types";
+
+/** Limity AI odpovědí na jeden kontakt. */
+export const AI_MIN_INTERVAL_MS = 10_000;
+export const AI_MAX_PER_HOUR = 30;
+/** Kolik posledních zpráv konverzace jde do kontextu AI. */
+const AI_HISTORY_LIMIT = 6;
 
 export type ProcessOptions = {
   /** Simulace z adminu – vždy mock, v logu označeno. */
   simulated?: boolean;
+  /** Simulace: AI odpověď i u účtu, který má AI vypnuté. */
+  forceAi?: boolean;
   now?: Date;
 };
 
@@ -143,8 +153,14 @@ async function handleMessage(account: Account | null, accountIgId: string, msg: 
   // Příchozí DM otevírá (prodlužuje) 24h okno.
   const contact = await upsertContact(account.id, msg.sender.id, null, toDate(msg.timestamp, ctx.now));
 
+  // Klíčová pravidla mají přednost, AI odpovídá jen na zbytek.
   const rule = findMatchingRule(await loadRules(account.id, "dm"), { type: "dm", text });
-  if (!rule) return ignore("Žádné pravidlo neodpovídá");
+  if (!rule) {
+    if (!account.aiEnabled && !ctx.forceAi) return ignore("Žádné pravidlo neodpovídá");
+    const action = await aiReply(account, contact, message.mid, ctx);
+    await finishIncoming(inId, "processed", "Bez pravidla → AI");
+    return { ...base, status: "processed", ruleName: "AI odpověď", actions: [action] };
+  }
 
   const actions: ActionResult[] = [];
   if (rule.dmText?.trim()) {
@@ -163,6 +179,110 @@ async function handleMessage(account: Account | null, accountIgId: string, msg: 
 
   await finishIncoming(inId, "processed", null, rule.id);
   return { ...base, status: "processed", ruleId: rule.id, ruleName: rule.name, actions };
+}
+
+/**
+ * AI odpověď na DM bez pravidla: 24h okno → dedup claim → rate limit → Gemini → odeslání.
+ * Když AI selže, pošle se `ai_fallback_text` (pokud je vyplněný), jinak nic.
+ */
+async function aiReply(account: Account, contact: Contact, mid: string, ctx: Ctx): Promise<ActionResult> {
+  const kind = "ai_reply" as const;
+  const contactIgId = contact.igScopedId;
+  if (!isWithinDmWindow(contact.lastInteractionAt, ctx.now)) {
+    return logSkipped(account, null, kind, mid, contactIgId, "", "Mimo 24h okno", ctx);
+  }
+
+  const db = getDb();
+  const [claim] = await db
+    .insert(eventsLog)
+    .values({
+      accountId: account.id,
+      direction: "out",
+      kind,
+      status: "pending",
+      dedupKey: `out:${kind}:${mid}`,
+      igObjectId: mid,
+      contactIgId,
+      simulated: !!ctx.simulated,
+    })
+    .onConflictDoNothing({ target: eventsLog.dedupKey })
+    .returning({ id: eventsLog.id });
+  if (!claim) return { kind, status: "skipped", text: "", detail: "Už odesláno (dedup)" };
+
+  const finish = async (status: "sent" | "failed" | "skipped", text: string, detail: string, payload?: unknown) => {
+    await db
+      .update(eventsLog)
+      .set({ status, text, detail, payload: payload ?? null })
+      .where(eq(eventsLog.id, claim.id));
+    return { status, text, detail };
+  };
+
+  // Rate limit – počítají se jen dřív založené AI odpovědi témuž kontaktu (při souběhu vyhraje starší).
+  const sameContact = and(
+    eq(eventsLog.accountId, account.id),
+    eq(eventsLog.contactIgId, contactIgId),
+    eq(eventsLog.kind, kind),
+    eq(eventsLog.simulated, !!ctx.simulated),
+    inArray(eventsLog.status, ["pending", "sent"]),
+    lt(eventsLog.id, claim.id),
+  );
+  const [usage] = await db
+    .select({
+      lastHour: count(),
+      recent: sql<number>`count(*) filter (where ${gt(eventsLog.createdAt, new Date(ctx.now.getTime() - AI_MIN_INTERVAL_MS))})`.mapWith(Number),
+    })
+    .from(eventsLog)
+    .where(and(sameContact, gt(eventsLog.createdAt, new Date(ctx.now.getTime() - 3600_000))));
+  if (usage.recent > 0) {
+    return { kind, ...(await finish("skipped", "", `Rate limit: max 1 AI odpověď za ${AI_MIN_INTERVAL_MS / 1000} s`)) };
+  }
+  if (usage.lastHour >= AI_MAX_PER_HOUR) {
+    return { kind, ...(await finish("skipped", "", `Rate limit: max ${AI_MAX_PER_HOUR} AI odpovědí za hodinu`)) };
+  }
+
+  const history = await loadConversation(account.id, contactIgId, ctx);
+  const res = await generateReply(account.aiSystemPrompt?.trim() || DEFAULT_SYSTEM_PROMPT, history);
+  const ai: AiInfo = { model: res.model, latencyMs: res.latencyMs, attempts: res.attempts, error: res.error };
+  const aiDetail = [`${res.model} · ${res.latencyMs} ms · pokusů ${res.attempts}`, res.error && `AI chyba: ${res.error}`];
+
+  let text = res.text ?? "";
+  if (!res.ok) {
+    const fallback = account.aiFallbackText?.trim();
+    if (!fallback) return { kind, ai, ...(await finish("failed", "", [...aiDetail, "bez fallbacku"].filter(Boolean).join(" · "), { ai })) };
+    text = fill(fallback, { username: contact.username ?? "" });
+    ai.fallback = true;
+    aiDetail.push("→ fallback");
+  }
+
+  const sent = await ig.sendDirectMessage(account.igUserId, contactIgId, { text }, { accessToken: tokenFor(account, ctx), forceMock: ctx.simulated });
+  const detail = [...aiDetail, sent.ok ? `${sent.mock ? "MOCK " : ""}id=${sent.id}` : `IG chyba: ${sent.error}`].filter(Boolean).join(" · ");
+  const out = await finish(sent.ok ? "sent" : "failed", text, detail, { request: sent.request, ai });
+  return { kind, ...out, request: sent.request, mock: sent.mock, ai };
+}
+
+/** Posledních N zpráv konverzace s kontaktem (příchozí DM + úspěšně odeslané odpovědi), od nejstarší. */
+async function loadConversation(accountId: number, contactIgId: string, ctx: Ctx): Promise<ChatTurn[]> {
+  const rows = await getDb()
+    .select({ direction: eventsLog.direction, text: eventsLog.text })
+    .from(eventsLog)
+    .where(
+      and(
+        eq(eventsLog.accountId, accountId),
+        eq(eventsLog.contactIgId, contactIgId),
+        eq(eventsLog.simulated, !!ctx.simulated),
+        or(
+          and(eq(eventsLog.direction, "in"), eq(eventsLog.kind, "message")),
+          and(
+            eq(eventsLog.direction, "out"),
+            inArray(eventsLog.kind, ["dm", "private_reply", "ai_reply"]),
+            eq(eventsLog.status, "sent"),
+          ),
+        ),
+      ),
+    )
+    .orderBy(desc(eventsLog.createdAt), desc(eventsLog.id))
+    .limit(AI_HISTORY_LIMIT);
+  return rows.reverse().map((r) => ({ role: r.direction === "in" ? "user" : "model", text: r.text ?? "" }));
 }
 
 // ---------------------------------------------------------------------------
@@ -231,7 +351,7 @@ async function finishIncoming(id: number, status: "processed" | "ignored", detai
 /** Idempotentní odeslání: nejdřív "claim" řádku s unikátním dedup klíčem, pak volání API. */
 async function sendOnce(
   account: Account,
-  rule: Rule,
+  rule: Rule | null,
   kind: ActionResult["kind"],
   dedupKey: string,
   igObjectId: string,
@@ -245,7 +365,7 @@ async function sendOnce(
     .insert(eventsLog)
     .values({
       accountId: account.id,
-      ruleId: rule.id,
+      ruleId: rule?.id ?? null,
       direction: "out",
       kind,
       status: "pending",
@@ -271,7 +391,7 @@ async function sendOnce(
 
 async function logSkipped(
   account: Account,
-  rule: Rule,
+  rule: Rule | null,
   kind: ActionResult["kind"],
   igObjectId: string,
   contactIgId: string,
@@ -281,7 +401,7 @@ async function logSkipped(
 ): Promise<ActionResult> {
   await getDb().insert(eventsLog).values({
     accountId: account.id,
-    ruleId: rule.id,
+    ruleId: rule?.id ?? null,
     direction: "out",
     kind,
     status: "skipped",
