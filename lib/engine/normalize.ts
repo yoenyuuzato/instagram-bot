@@ -8,6 +8,13 @@ export function normalizeText(input: string): string {
     .trim();
 }
 
+/** Počet slov – emoji a samotná interpunkce se nepočítají. */
+export function countWords(input: string): number {
+  return normalizeText(input)
+    .split(" ")
+    .filter((w) => /[\p{L}\p{N}]/u.test(w)).length;
+}
+
 /** Pro exact match ignorujeme i interpunkci a emoji na okrajích ("Chci!" == "chci"). */
 export function normalizeForExact(input: string): string {
   return normalizeText(input).replace(/^[^\p{L}\p{N}]+|[^\p{L}\p{N}]+$/gu, "");

@@ -8,6 +8,7 @@ import { checkPassword, createSessionToken, SESSION_COOKIE, SESSION_TTL_SECONDS,
 import { getDb } from "@/lib/db";
 import { accounts, rules } from "@/lib/db/schema";
 import { encrypt } from "@/lib/crypto";
+import { crawlSite, normalizeStartUrl } from "@/lib/knowledge/crawl";
 
 export type FormState = { error?: string; ok?: string } | undefined;
 
@@ -50,6 +51,8 @@ function parseRule(fd: FormData) {
     .map((k) => k.trim())
     .filter(Boolean);
   const dmButtonUrl = opt(fd, "dmButtonUrl");
+  const shortOnly = fd.get("shortOnly") === "on";
+  const maxWords = Number(str(fd, "maxWords"));
   const data = {
     accountId: Number(str(fd, "accountId")),
     name: str(fd, "name"),
@@ -61,6 +64,7 @@ function parseRule(fd: FormData) {
     dmText: opt(fd, "dmText"),
     dmButtonUrl,
     dmButtonTitle: dmButtonUrl ? opt(fd, "dmButtonTitle") : null,
+    maxWords: shortOnly ? maxWords : null,
     active: fd.get("active") === "on",
   } as const;
 
@@ -68,6 +72,9 @@ function parseRule(fd: FormData) {
   if (!data.publicReply && !data.dmText) return { error: "Vyplňte veřejnou odpověď nebo text DM." };
   if (dmButtonUrl && !/^https?:\/\//.test(dmButtonUrl)) return { error: "URL tlačítka musí začínat http(s)://" };
   if (dmButtonUrl && !data.dmText) return { error: "Tlačítko vyžaduje text DM." };
+  if (shortOnly && !(Number.isInteger(maxWords) && maxWords >= 1 && maxWords <= 50)) {
+    return { error: "Max. počet slov musí být celé číslo 1–50." };
+  }
   return { data };
 }
 
@@ -160,4 +167,41 @@ export async function saveAccountAiAction(_: FormState, fd: FormData): Promise<F
     .where(eq(accounts.id, id));
   revalidatePath("/admin/accounts");
   return { ok: aiEnabled ? "Uloženo – AI odpovědi jsou zapnuté." : "Uloženo – AI odpovědi jsou vypnuté." };
+}
+
+/** Stáhne web klienta do znalostní báze účtu. Běží až ~50 s – stránka /admin/accounts má maxDuration 60. */
+export async function crawlKnowledgeAction(_: FormState, fd: FormData): Promise<FormState> {
+  await requireAdmin();
+  const id = Number(str(fd, "id"));
+  if (!Number.isInteger(id) || id <= 0) return { error: "Neplatný účet." };
+
+  let url: string;
+  try {
+    const u = normalizeStartUrl(str(fd, "knowledgeUrl"));
+    if (!u.hostname.includes(".")) throw new Error();
+    url = u.toString();
+  } catch {
+    return { error: "Zadejte platnou URL webu, např. https://topprofitdesign.cz" };
+  }
+
+  const db = getDb();
+  await db.update(accounts).set({ knowledgeUrl: url, updatedAt: new Date() }).where(eq(accounts.id, id));
+  try {
+    const res = await crawlSite(url);
+    await db
+      .update(accounts)
+      .set({ knowledgeText: res.text, knowledgeUpdatedAt: new Date(), updatedAt: new Date() })
+      .where(eq(accounts.id, id));
+    revalidatePath("/admin/accounts");
+    const robots = res.skipped.filter((s) => s.reason.includes("robots")).length;
+    const notes = [
+      res.source === "sitemap" ? "ze sitemap.xml" : "z odkazů na homepage",
+      res.truncated && "zkráceno na limit znaků",
+      res.skipped.length > 0 && `přeskočeno ${res.skipped.length}${robots ? ` (robots.txt: ${robots})` : ""}`,
+    ].filter(Boolean);
+    return { ok: `Načteno ${res.pages.length} stránek, ${res.text.length.toLocaleString("cs-CZ")} znaků (${notes.join(", ")}).` };
+  } catch (e) {
+    revalidatePath("/admin/accounts");
+    return { error: e instanceof Error ? e.message : String(e) };
+  }
 }

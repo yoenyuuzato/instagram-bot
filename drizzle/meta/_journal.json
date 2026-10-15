@@ -15,6 +15,13 @@
       "when": 1792049178784,
       "tag": "0001_ai_replies",
       "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "7",
+      "when": 1792050744734,
+      "tag": "0002_knowledge_base",
+      "breakpoints": true
     }
   ]
 }

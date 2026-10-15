@@ -14,7 +14,7 @@ type Props = {
 export function AiSettingsForm({ id, username, aiEnabled, aiSystemPrompt, aiFallbackText }: Props) {
   const [state, action, pending] = useActionState(saveAccountAiAction, undefined);
   return (
-    <form action={action} className="card max-w-3xl space-y-4">
+    <form action={action} className="space-y-4">
       <input type="hidden" name="id" value={id} />
       <div className="flex flex-wrap items-center justify-between gap-3">
         <h3 className="font-medium">@{username}</h3>

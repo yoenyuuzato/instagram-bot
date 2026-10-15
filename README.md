@@ -31,6 +31,7 @@ Instagram ──webhook──▶ /api/webhooks/instagram ──(after)──▶ 
 | `lib/engine/window.ts` | 24h okno pro DM, 7denní okno pro private reply na komentář. |
 | `lib/engine/process.ts` | Zpracování payloadu: dedup, kontakty, match, akce, log. |
 | `lib/ai/gemini.ts` | Volání Gemini REST API (`generateContent`, bez SDK) – timeout 20 s, max. 2 pokusy (jen 429/5xx), minimální thinking, čištění markdownu, max. ~600 znaků. |
+| `lib/knowledge/crawl.ts` | Crawler znalostní báze: robots.txt, sitemap.xml (fallback odkazy z homepage), max. 30 stránek, timeout 10 s/stránka, čistý text max. ~60 000 znaků. |
 | `lib/ai/prompt.ts` | Výchozí šablona system promptu (Top Profit Design). |
 | `lib/instagram.ts` | Wrapper nad Graph API (`replyToComment`, `sendPrivateReply`, `sendDirectMessage`). V MOCK režimu vrací jen popis requestu. |
 | `lib/crypto.ts` | AES-256-GCM šifrování access tokenů. |
@@ -40,8 +41,8 @@ Instagram ──webhook──▶ /api/webhooks/instagram ──(after)──▶ 
 
 ### Datový model
 
-- **accounts** – `ig_user_id`, `username`, `access_token` (šifrovaně), `token_expires_at`, `active`, `ai_enabled`, `ai_system_prompt`, `ai_fallback_text`
-- **rules** – `account_id`, `trigger_type` (`comment` \| `dm`), `keywords[]`, `match_mode` (`contains` \| `exact`), `post_id` (volitelné), `public_reply`, `dm_text`, `dm_button_url`, `dm_button_title`, `active`
+- **accounts** – `ig_user_id`, `username`, `access_token` (šifrovaně), `token_expires_at`, `active`, `ai_enabled`, `ai_system_prompt`, `ai_fallback_text`, `knowledge_url`, `knowledge_text`, `knowledge_updated_at`
+- **rules** – `account_id`, `trigger_type` (`comment` \| `dm`), `keywords[]`, `match_mode` (`contains` \| `exact`), `post_id` (volitelné), `public_reply`, `dm_text`, `dm_button_url`, `dm_button_title`, `max_words` (jen krátká zpráva, `null` = vypnuto), `active`
 - **events_log** – příchozí webhooky i odchozí odpovědi: `direction` (in/out), `kind`, `status`, `dedup_key` (unikátní), `detail`, `payload`, `simulated`
 - **contacts** – `account_id` + `ig_scoped_id` (unikátní), `username`, `last_interaction_at` (poslední příchozí DM → 24h okno)
 
@@ -52,16 +53,18 @@ Instagram ──webhook──▶ /api/webhooks/instagram ──(after)──▶ 
 - **24h okno:** odpověď na DM se pošle jen do 24 h od poslední zprávy uživatele (`contacts.last_interaction_at`), jinak se v logu označí jako přeskočená.
 - **Private reply:** DM na základě komentáře se posílá jako private reply (`recipient.comment_id`) – max. 1× na komentář a do 7 dní od komentáře. Nevyžaduje otevřené 24h okno.
 - **Proměnné:** v textech lze použít `{username}`. Když username chybí, dosadí se prázdný řetězec a uklidí se mezery před interpunkcí („Ahoj {username}! 👋“ → „Ahoj! 👋“).
+- **Jen krátká zpráva:** pravidlo může mít `max_words` (např. 3). Delší text pravidlo přeskočí – u DM pak odpoví AI (je-li zapnutá). Emoji a interpunkce se do slov nepočítají. U nových pravidel vypnuto.
 - **Tlačítko:** pokud má pravidlo `dm_button_url`, DM se pošle jako button template s `web_url` tlačítkem.
 
 ## AI odpovědi (Gemini)
 
 - **Kdy:** příchozí DM, které nesedí na žádné DM pravidlo, a účet má v `/admin/accounts` zapnuté **AI zapnuto**. Klíčová pravidla mají vždy přednost. Na komentáře AI neodpovídá.
-- **Kontext:** `ai_system_prompt` účtu (+ pevná pravidla: česky, bez markdownu, max. ~600 znaků) a posledních 6 zpráv konverzace s kontaktem z `events_log` (příchozí DM + odeslané odpovědi).
+- **Kontext:** `ai_system_prompt` účtu, případně **ZNALOSTI O FIRME** z webu (viz níže), pevná pravidla (česky, bez markdownu, max. ~600 znaků) a posledních 6 zpráv konverzace s kontaktem z `events_log` (příchozí DM + odeslané odpovědi).
 - **Volání:** `POST https://generativelanguage.googleapis.com/v1beta/models/$GEMINI_MODEL:generateContent`, hlavička `x-goog-api-key`. Timeout 20 s na pokus, max. 2 pokusy (opakuje se jen 429 a 5xx, timeout ne). Přemýšlení je kvůli latenci minimalizované: Gemini 3+ `thinkingConfig.thinkingLevel` (výchozí `low`, nejnižší úroveň u `gemini-3.8-flash`; přepsat jde přes `GEMINI_THINKING_LEVEL`, např. `minimal` u modelů, které ji podporují), Gemini 2.5 Flash `thinkingBudget: 0`. Webhook má `maxDuration = 120`, simulátor 60 s.
 - **Pojistky:** 24h okno, dedup (`out:ai_reply:<mid>`), rate limit na kontakt – max. 1 AI odpověď za 10 s a max. 30 za hodinu (přebytečné se v logu označí jako přeskočené).
 - **Selhání AI:** pošle se `ai_fallback_text`, nebo – když je prázdný – nic. Vše se loguje do `events_log` jako `ai_reply` s modelem, latencí, počtem pokusů a případnou chybou (`detail` + `payload.ai`).
 - **Test:** Simulátor → typ DM → text, který nesedí na pravidlo. Gemini se volá doopravdy, Instagram ne. Volba „Vynutit AI“ otestuje odpověď i u účtu s vypnutou AI.
+- **Znalostní báze z webu:** v `/admin/accounts` u účtu zadej URL webu → **Načíst / Obnovit web**. Crawler přečte `robots.txt` (respektuje `Disallow`/`Allow` a jeho `Sitemap:`), vezme URL ze `sitemap.xml` (i sitemap index), a když chybí, odkazy z homepage na stejnou doménu. Stáhne max. 30 stránek (10 s timeout, paralelně, celkem do ~45 s – akce má `maxDuration = 60`), odstraní `nav`, `footer`, `script`, `style` apod., opakované řádky (menu, cookie lišta) bere jen jednou, stránky ve stejném jazyce jako zadaná URL dá dopředu a spojí vše pod nadpisy `## URL — titulek` do max. ~60 000 znaků. Když má účet znalosti, AI odpovídá jen z nich a z promptu, ceny uvádí jen když jsou ve znalostech, a když odpověď nezná, řekne, že se ozve člověk, a požádá o e-mail. Obnova je ruční.
 - **Klíč:** zdarma v [Google AI Studio](https://aistudio.google.com/apikey). Free tier má limity požadavků za minutu/den – při překročení vrací 429 a použije se fallback.
 
 ## Lokální spuštění

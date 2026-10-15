@@ -10,6 +10,7 @@ export function RuleForm({ rule, accounts }: { rule?: Rule; accounts: AccountOpt
   const [state, action, pending] = useActionState(saveRuleAction, undefined);
   const [trigger, setTrigger] = useState<"comment" | "dm">(rule?.triggerType ?? "comment");
   const [buttonUrl, setButtonUrl] = useState(rule?.dmButtonUrl ?? "");
+  const [shortOnly, setShortOnly] = useState(rule?.maxWords != null);
 
   if (accounts.length === 0) {
     return <p className="card text-sm text-neutral-600">Nejdřív přidejte účet v sekci Účty.</p>;
@@ -73,6 +74,30 @@ export function RuleForm({ rule, accounts }: { rule?: Rule; accounts: AccountOpt
         </label>
         <input id="keywords" name="keywords" className="input" defaultValue={rule?.keywords.join(", ")} placeholder="chci, info, cena" />
         <p className="hint">Oddělte čárkou. Velikost písmen a diakritika se ignorují. Prázdné = reaguje na cokoliv.</p>
+      </div>
+
+      <div>
+        <div className="flex flex-wrap items-center gap-x-3 gap-y-2">
+          <label className="flex items-center gap-2 text-sm">
+            <input type="checkbox" name="shortOnly" checked={shortOnly} onChange={(e) => setShortOnly(e.target.checked)} />
+            Jen krátká zpráva – max.
+          </label>
+          <input
+            name="maxWords"
+            type="number"
+            min={1}
+            max={50}
+            aria-label="Maximální počet slov"
+            className="input w-20"
+            defaultValue={rule?.maxWords ?? 3}
+            disabled={!shortOnly}
+          />
+          <span className="text-sm">slov</span>
+        </div>
+        <p className="hint">
+          Delší text pravidlo přeskočí – např. „cena“ zachytí, ale „kolik by stál e-shop s napojením na sklad?“ nechá
+          {trigger === "dm" ? " na AI odpověď (pokud je u účtu zapnutá)." : " bez odpovědi."}
+        </p>
       </div>
 
       {trigger === "comment" && (

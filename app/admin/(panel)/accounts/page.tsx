@@ -8,6 +8,10 @@ import { DbError, formatDate, PageHeader } from "../ui";
 import { DEFAULT_SYSTEM_PROMPT } from "@/lib/ai/prompt";
 import { AccountForm } from "./account-form";
 import { AiSettingsForm } from "./ai-settings-form";
+import { KnowledgeForm } from "./knowledge-form";
+
+// Server Action "Načíst / Obnovit web" stahuje až 30 stránek.
+export const maxDuration = 60;
 
 function isExpired(d: Date | null) {
   return !!d && d.getTime() < Date.now();
@@ -93,14 +97,22 @@ export default async function AccountsPage() {
             </p>
           </div>
           {rows.map(({ account: a }) => (
-            <AiSettingsForm
-              key={a.id}
-              id={a.id}
-              username={a.username}
-              aiEnabled={a.aiEnabled}
-              aiSystemPrompt={a.aiSystemPrompt ?? DEFAULT_SYSTEM_PROMPT}
-              aiFallbackText={a.aiFallbackText ?? ""}
-            />
+            <div key={a.id} className="card max-w-3xl space-y-6">
+              <AiSettingsForm
+                id={a.id}
+                username={a.username}
+                aiEnabled={a.aiEnabled}
+                aiSystemPrompt={a.aiSystemPrompt ?? DEFAULT_SYSTEM_PROMPT}
+                aiFallbackText={a.aiFallbackText ?? ""}
+              />
+              <KnowledgeForm
+                id={a.id}
+                url={a.knowledgeUrl ?? ""}
+                updatedAt={a.knowledgeUpdatedAt ? formatDate(a.knowledgeUpdatedAt) : null}
+                chars={a.knowledgeText?.length ?? 0}
+                preview={a.knowledgeText?.slice(0, 500) ?? ""}
+              />
+            </div>
           ))}
         </section>
       )}

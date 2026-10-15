@@ -1,7 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import type { Rule } from "@/lib/db/schema";
-import { normalizeForExact, normalizeText } from "./normalize";
+import { countWords, normalizeForExact, normalizeText } from "./normalize";
 import { findMatchingRule, ruleMatches } from "./match";
 import { isWithinDmWindow, isWithinPrivateReplyWindow } from "./window";
 import { signPayload, verifySignature } from "@/lib/webhook-signature";
@@ -18,6 +18,7 @@ const rule = (over: Partial<Rule>): Rule => ({
   dmText: "dm",
   dmButtonUrl: null,
   dmButtonTitle: null,
+  maxWords: null,
   active: true,
   createdAt: new Date(),
   updatedAt: new Date(),
@@ -78,4 +79,13 @@ test("X-Hub-Signature-256", () => {
   assert.ok(!verifySignature(body, sig, "other"));
   assert.ok(!verifySignature(body + " ", sig, "secret"));
   assert.ok(!verifySignature(body, null, "secret"));
+});
+
+test("jen krátká zpráva (maxWords)", () => {
+  const r = rule({ triggerType: "dm", keywords: ["cena"], maxWords: 3 });
+  assert.ok(ruleMatches(r, { type: "dm", text: "Cena? 🙏" }));
+  assert.ok(ruleMatches(r, { type: "dm", text: "jaká je cena" }));
+  assert.ok(!ruleMatches(r, { type: "dm", text: "jaká je cena e-shopu s napojením" }));
+  assert.ok(ruleMatches(rule({ triggerType: "dm", keywords: ["cena"] }), { type: "dm", text: "jaká je cena e-shopu s napojením" }));
+  assert.equal(countWords("  Ahoj!!  👋 jak se máš ? "), 4);
 });

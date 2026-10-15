@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { buildContents, cleanReply, generateReply, thinkingConfigFor } from "./gemini";
+import { buildContents, buildSystemInstruction, cleanReply, generateReply, thinkingConfigFor } from "./gemini";
 
 test("cleanReply: odstraní markdown", () => {
   assert.equal(cleanReply("**Ahoj!** Mrkni na [web](https://topprofitdesign.cz)."), "Ahoj! Mrkni na web https://topprofitdesign.cz.");
@@ -100,4 +100,17 @@ test("generateReply: timeout se neopakuje, 429/5xx ano", async () => {
     if (prevKey) process.env.GEMINI_API_KEY = prevKey;
     else delete process.env.GEMINI_API_KEY;
   }
+});
+
+test("buildSystemInstruction: znalosti jen když jsou", () => {
+  const plain = buildSystemInstruction("Prompt");
+  assert.ok(!plain.includes("ZNALOSTI"));
+  assert.ok(plain.includes("Piš vždy česky"));
+  const kb = buildSystemInstruction("Prompt", "## https://e.cz\nWeb od 20 000 Kč");
+  assert.ok(kb.startsWith("Prompt\n\nZNALOSTI O FIRME"));
+  assert.ok(kb.includes("Web od 20 000 Kč"));
+  assert.ok(kb.includes("Ceny uváděj jen tehdy"));
+  assert.ok(kb.includes("popros o e-mail"));
+  assert.ok(kb.trimEnd().endsWith("ideálně mnohem méně."));
+  assert.equal(buildSystemInstruction("Prompt", "   "), plain);
 });

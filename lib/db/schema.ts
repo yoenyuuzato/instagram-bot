@@ -27,6 +27,10 @@ export const accounts = pgTable("accounts", {
   aiSystemPrompt: text("ai_system_prompt"),
   /** Pošle se, když AI selže. Prázdné = při chybě se neodpoví nic. */
   aiFallbackText: text("ai_fallback_text"),
+  /** Znalostní báze z webu klienta – text stažený crawlerem (lib/knowledge/crawl.ts), jde do kontextu AI. */
+  knowledgeUrl: text("knowledge_url"),
+  knowledgeText: text("knowledge_text"),
+  knowledgeUpdatedAt: timestamp("knowledge_updated_at", { withTimezone: true }),
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
   updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
 });
@@ -47,6 +51,8 @@ export const rules = pgTable(
     dmText: text("dm_text"),
     dmButtonUrl: text("dm_button_url"),
     dmButtonTitle: text("dm_button_title"),
+    /** "Jen krátká zpráva": pravidlo platí jen pro texty s nejvýš tolika slovy (null = bez omezení). */
+    maxWords: integer("max_words"),
     active: boolean("active").notNull().default(true),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
     updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),

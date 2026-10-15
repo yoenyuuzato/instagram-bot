@@ -1,5 +1,5 @@
 import type { Rule } from "@/lib/db/schema";
-import { normalizeForExact, normalizeText } from "./normalize";
+import { countWords, normalizeForExact, normalizeText } from "./normalize";
 
 export type IncomingEvent =
   | { type: "comment"; text: string; postId?: string | null }
@@ -8,6 +8,8 @@ export type IncomingEvent =
 export function ruleMatches(rule: Rule, event: IncomingEvent): boolean {
   if (!rule.active || rule.triggerType !== event.type) return false;
   if (event.type === "comment" && rule.postId && rule.postId !== event.postId) return false;
+  // "Jen krátká zpráva" – delší text pravidlo přeskočí (u DM pak může odpovědět AI).
+  if (rule.maxWords && countWords(event.text) > rule.maxWords) return false;
 
   const keywords = rule.keywords.map((k) => k.trim()).filter(Boolean);
   // Pravidlo bez klíčových slov = reaguje na cokoliv.

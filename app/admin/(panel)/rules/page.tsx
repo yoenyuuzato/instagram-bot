@@ -70,7 +70,10 @@ export default async function RulesPage() {
                     ) : (
                       <span className="text-neutral-400">cokoliv</span>
                     )}
-                    <div className="mt-1 text-xs text-neutral-500">{rule.matchMode === "exact" ? "přesná shoda" : "obsahuje"}</div>
+                    <div className="mt-1 text-xs text-neutral-500">
+                      {rule.matchMode === "exact" ? "přesná shoda" : "obsahuje"}
+                      {rule.maxWords != null && ` · max. ${rule.maxWords} slov`}
+                    </div>
                   </td>
                   <td className="text-xs text-neutral-600">
                     {rule.publicReply && <div>Veřejná odpověď</div>}

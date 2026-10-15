@@ -242,7 +242,7 @@ async function aiReply(account: Account, contact: Contact, mid: string, ctx: Ctx
   }
 
   const history = await loadConversation(account.id, contactIgId, ctx);
-  const res = await generateReply(account.aiSystemPrompt?.trim() || DEFAULT_SYSTEM_PROMPT, history);
+  const res = await generateReply(account.aiSystemPrompt?.trim() || DEFAULT_SYSTEM_PROMPT, history, account.knowledgeText);
   const ai: AiInfo = { model: res.model, latencyMs: res.latencyMs, attempts: res.attempts, error: res.error };
   const aiDetail = [`${res.model} · ${res.latencyMs} ms · pokusů ${res.attempts}`, res.error && `AI chyba: ${res.error}`];
 
