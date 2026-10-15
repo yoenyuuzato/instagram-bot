@@ -79,3 +79,23 @@ test("asMessage: quick reply i ice breaker postback jako běžná zpráva", () =
   assert.deepEqual(noMid?.message, { mid: "postback_u1_1700000000000", text: "Reference" });
   assert.equal(asMessage({ ...base }), null);
 });
+
+test("záchytné pravidlo bez klíčových slov má nejnižší prioritu – až po fuzzy shodě", () => {
+  const catchAll = rule({ id: 1, keywords: [] });
+  const tvorba = rule({ id: 2, keywords: ["tvorba webu"] });
+  const cenik = rule({ id: 3, keywords: ["ceník"] });
+  const rules = [catchAll, tvorba, cenik];
+  assert.equal(matchQuality(catchAll, dm("cokoliv")), "catchall");
+  // Překlep: fuzzy shoda porazí záchytné pravidlo (i když má záchytné nižší ID).
+  assert.equal(findMatchingRule(rules, dm("tvroba webu"))?.id, 2);
+  assert.equal(findMatchingRule(rules, dm("kolik stojí tvroba webu?"))?.id, 2);
+  // Přesná shoda samozřejmě taky.
+  assert.equal(findMatchingRule(rules, dm("pošli ceník"))?.id, 3);
+  // Nic nesedí ani s překlepem → záchytné pravidlo.
+  assert.equal(findMatchingRule(rules, dm("dobrý den, máte otevřeno?"))?.id, 1);
+  // Záchytné pravidlo pro konkrétní post neporazí přesnou shodu klíčového slova.
+  const postCatchAll = rule({ id: 4, triggerType: "comment", keywords: [], postId: "p1" });
+  const kw = rule({ id: 5, triggerType: "comment", keywords: ["ceník"] });
+  assert.equal(findMatchingRule([postCatchAll, kw], { type: "comment", text: "ceník?", postId: "p1" })?.id, 5);
+  assert.equal(findMatchingRule([postCatchAll, kw], { type: "comment", text: "super!", postId: "p1" })?.id, 4);
+});

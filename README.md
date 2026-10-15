@@ -27,7 +27,7 @@ Instagram ──webhook──▶ /api/webhooks/instagram ──(after)──▶ 
 | --- | --- |
 | `app/api/webhooks/instagram/route.ts` | Webhook endpoint. GET verifikace, POST ověří podpis HMAC-SHA256 nad raw tělem, vrátí `200 EVENT_RECEIVED` a zpracování spustí přes `after()`. |
 | `lib/engine/normalize.ts` | Normalizace textu – lowercase, bez diakritiky, sjednocené mezery; pro exact match i ořez interpunkce/emoji. |
-| `lib/engine/match.ts` | Výběr pravidla. Přesná shoda má přednost před shodou s překlepem; dál pravidlo pro konkrétní post > přesná shoda > obsahuje > delší shodující se klíčové slovo > nejstarší. Pravidlo bez klíčových slov reaguje na vše. Tolerance překlepů (jen „obsahuje“): Damerau-Levenshtein (přehození sousedních písmen = 1 překlep) ≤1 pro slova 4–6 znaků, ≤2 pro delší, kratší slova přesně. |
+| `lib/engine/match.ts` | Výběr pravidla. Úrovně: přesná shoda klíčového slova > shoda s překlepem > záchytné pravidlo bez klíčových slov (reaguje na vše, ale jen když nic jiného nesedí). V rámci úrovně: pravidlo pro konkrétní post > přesná shoda > obsahuje > delší shodující se klíčové slovo > nejstarší. Tolerance překlepů (jen „obsahuje“): Damerau-Levenshtein (přehození sousedních písmen = 1 překlep) ≤1 pro slova 4–6 znaků, ≤2 pro delší, kratší slova přesně. |
 | `lib/engine/window.ts` | 24h okno pro DM, 7denní okno pro private reply na komentář. |
 | `lib/engine/process.ts` | Zpracování payloadu: dedup, kontakty, match, akce, log. |
 | `lib/ai/gemini.ts` | Volání Gemini REST API (`generateContent`, bez SDK) – timeout 20 s, max. 2 pokusy (jen 429/5xx), minimální thinking, čištění markdownu, max. ~600 znaků. |

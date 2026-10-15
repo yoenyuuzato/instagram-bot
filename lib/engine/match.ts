@@ -5,8 +5,11 @@ export type IncomingEvent =
   | { type: "comment"; text: string; postId?: string | null }
   | { type: "dm"; text: string };
 
-/** "precise" = přesná shoda (exact / contains), "fuzzy" = shoda s tolerancí překlepů (jen contains). */
-export type MatchQuality = "precise" | "fuzzy";
+/**
+ * "precise" = přesná shoda klíčového slova (exact / contains), "fuzzy" = shoda s tolerancí překlepů (jen contains),
+ * "catchall" = pravidlo bez klíčových slov (reaguje na cokoliv).
+ */
+export type MatchQuality = "precise" | "fuzzy" | "catchall";
 
 export function matchQuality(rule: Rule, event: IncomingEvent): MatchQuality | null {
   if (!rule.active || rule.triggerType !== event.type) return null;
@@ -15,8 +18,8 @@ export function matchQuality(rule: Rule, event: IncomingEvent): MatchQuality | n
   if (rule.maxWords && countWords(event.text) > rule.maxWords) return null;
 
   const keywords = rule.keywords.map((k) => k.trim()).filter(Boolean);
-  // Pravidlo bez klíčových slov = reaguje na cokoliv.
-  if (keywords.length === 0) return "precise";
+  // Pravidlo bez klíčových slov = reaguje na cokoliv (záchytné, nejnižší priorita).
+  if (keywords.length === 0) return "catchall";
 
   if (rule.matchMode === "exact") {
     const text = normalizeForExact(event.text);
@@ -99,22 +102,25 @@ export function matchLength(rule: Rule, event: IncomingEvent): number {
   return Math.max(0, ...matched.map((k) => k.length));
 }
 
-/** Přesná shoda > shoda s překlepem; pak specifičtější pravidla: konkrétní post > exact > contains > delší shoda > starší. */
+/** Pořadí úrovní shody: přesná shoda klíčového slova > shoda s překlepem > záchytné pravidlo bez klíčových slov. */
+const TIER: Record<MatchQuality, number> = { precise: 0, fuzzy: 1, catchall: 2 };
+
+/** V rámci úrovně: konkrétní post > exact > contains > delší shoda > starší. */
 function specificity(rule: Rule) {
   return (rule.postId ? 4 : 0) + (rule.matchMode === "exact" ? 2 : 0) + (rule.keywords.length > 0 ? 1 : 0);
 }
 
 export function findMatchingRule(rules: Rule[], event: IncomingEvent): Rule | null {
-  const fuzzy = new Map<number, number>();
+  const tier = new Map<number, number>();
   const candidates = rules.filter((r) => {
     const q = matchQuality(r, event);
-    if (q) fuzzy.set(r.id, q === "fuzzy" ? 1 : 0);
+    if (q) tier.set(r.id, TIER[q]);
     return q !== null;
   });
   const len = new Map(candidates.map((r) => [r.id, matchLength(r, event)]));
   candidates.sort(
     (a, b) =>
-      fuzzy.get(a.id)! - fuzzy.get(b.id)! ||
+      tier.get(a.id)! - tier.get(b.id)! ||
       specificity(b) - specificity(a) ||
       len.get(b.id)! - len.get(a.id)! ||
       a.id - b.id,
