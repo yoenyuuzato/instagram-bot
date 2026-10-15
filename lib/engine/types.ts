@@ -12,7 +12,16 @@ export type MessagingEvent = {
   sender: { id: string };
   recipient: { id: string };
   timestamp: number;
-  message?: { mid: string; text?: string; is_echo?: boolean; is_deleted?: boolean };
+  message?: {
+    mid: string;
+    text?: string;
+    is_echo?: boolean;
+    is_deleted?: boolean;
+    /** Klik na quick reply – payload nastavujeme na text tlačítka. */
+    quick_reply?: { payload?: string };
+  };
+  /** Klik na ice breaker (webhook messaging_postbacks). */
+  postback?: { mid?: string; title?: string; payload?: string };
 };
 
 export type WebhookPayload = {

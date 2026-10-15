@@ -33,6 +33,8 @@ export const accounts = pgTable("accounts", {
   knowledgeUpdatedAt: timestamp("knowledge_updated_at", { withTimezone: true }),
   /** Kam posílat upozornění na nové leady (e-mail/telefon v DM). Prázdné = neposílat. */
   notifyEmail: text("notify_email"),
+  /** Ice breakers – až 4 úvodní otázky v prázdném DM (nastavují se přes messenger_profile). */
+  iceBreakers: text("ice_breakers").array().notNull().default([]),
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
   updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
 });
@@ -57,6 +59,8 @@ export const rules = pgTable(
     maxWords: integer("max_words"),
     /** Při spuštění pravidla (ostrá DM) poslat e-mail na accounts.notify_email. */
     notifyOnMatch: boolean("notify_on_match").notNull().default(false),
+    /** Quick replies pod DM odpovědí (max. 13, titulek max. 20 znaků). Payload = text tlačítka. */
+    quickReplies: text("quick_replies").array().notNull().default([]),
     active: boolean("active").notNull().default(true),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
     updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),

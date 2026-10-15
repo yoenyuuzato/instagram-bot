@@ -10,6 +10,7 @@ import { AccountForm } from "./account-form";
 import { AiSettingsForm } from "./ai-settings-form";
 import { KnowledgeForm } from "./knowledge-form";
 import { NotifyForm } from "./notify-form";
+import { IceBreakersForm } from "./ice-breakers-form";
 
 // Server Action "Načíst / Obnovit web" stahuje až 30 stránek.
 export const maxDuration = 60;
@@ -114,6 +115,7 @@ export default async function AccountsPage() {
                 preview={a.knowledgeText?.slice(0, 500) ?? ""}
               />
               <NotifyForm id={a.id} notifyEmail={a.notifyEmail ?? ""} />
+              <IceBreakersForm id={a.id} questions={a.iceBreakers} />
             </div>
           ))}
         </section>

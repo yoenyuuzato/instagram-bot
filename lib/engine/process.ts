@@ -10,6 +10,7 @@ import { detectContacts, type ContactHit } from "@/lib/notify/detect";
 import { buildLeadEmail, buildRuleEmail, contactDisplay, sendEmail } from "@/lib/notify/email";
 import { findMatchingRule } from "./match";
 import { fillTemplate as fill } from "./template";
+import { sleep, typingDelayMs } from "./typing";
 import { isWithinDmWindow, isWithinPrivateReplyWindow } from "./window";
 import type { ActionResult, AiInfo, CommentChangeValue, EventResult, MessagingEvent, WebhookPayload } from "./types";
 
@@ -48,8 +49,9 @@ export async function processWebhookPayload(payload: WebhookPayload, options: Pr
       if (change.field !== "comments" || !change.value?.id) continue;
       results.push(await handleComment(account, entry.id, change.value, entryTime, ctx));
     }
-    for (const msg of entry.messaging ?? []) {
-      if (!msg.message?.mid) continue;
+    for (const raw of entry.messaging ?? []) {
+      const msg = asMessage(raw);
+      if (!msg) continue;
       results.push(await handleMessage(account, entry.id, msg, ctx));
     }
   }
@@ -138,9 +140,21 @@ async function handleComment(
   return { ...base, status: "processed", ruleId: rule.id, ruleName: rule.name, actions };
 }
 
+/**
+ * Klik na ice breaker (postback) a quick reply se zpracují jako běžná zpráva s textem z payloadu
+ * (payload nastavujeme na text tlačítka/otázky).
+ */
+export function asMessage(msg: MessagingEvent): MessagingEvent | null {
+  if (msg.message?.mid) return msg;
+  const pb = msg.postback;
+  const text = pb?.payload || pb?.title;
+  if (!pb || !text) return null;
+  return { ...msg, message: { mid: pb.mid ?? `postback_${msg.sender.id}_${msg.timestamp}`, text } };
+}
+
 async function handleMessage(account: Account | null, accountIgId: string, msg: MessagingEvent, ctx: Ctx): Promise<EventResult> {
   const message = msg.message!;
-  const text = message.text ?? "";
+  const text = message.quick_reply?.payload || message.text || "";
   const base = { kind: "message" as const, igObjectId: message.mid, accountIgId, text, actions: [] as ActionResult[] };
 
   // Echo = zpráva odeslaná samotným účtem (i naším botem) – nelogujeme, jen ignorujeme.
@@ -201,10 +215,12 @@ async function handleMessage(account: Account | null, accountIgId: string, msg: 
       actions.push(await logSkipped(account, rule, "dm", message.mid, msg.sender.id, out, "Mimo 24h okno", ctx));
     } else {
       const opts = { accessToken: tokenFor(account, ctx), forceMock: ctx.simulated };
+      const content = { text: out, buttonUrl: rule.dmButtonUrl, buttonTitle: rule.dmButtonTitle, quickReplies: rule.quickReplies };
       actions.push(
-        await sendOnce(account, rule, "dm", `out:dm:${message.mid}`, message.mid, msg.sender.id, out, ctx, () =>
-          ig.sendDirectMessage(account.igUserId, msg.sender.id, { text: out, buttonUrl: rule.dmButtonUrl, buttonTitle: rule.dmButtonTitle }, opts),
-        ),
+        await sendOnce(account, rule, "dm", `out:dm:${message.mid}`, message.mid, msg.sender.id, out, ctx, async () => {
+          await (await startTyping(account, msg.sender.id, ctx))(out);
+          return ig.sendDirectMessage(account.igUserId, msg.sender.id, content, opts);
+        }),
       );
     }
   }
@@ -274,6 +290,8 @@ async function aiReply(account: Account, contact: Contact, mid: string, ctx: Ctx
     return { kind, ...(await finish("skipped", "", `Rate limit: max ${AI_MAX_PER_HOUR} AI odpovědí za hodinu`)) };
   }
 
+  // "Píše…" už během generování; před odesláním se dočká do typingDelayMs od začátku.
+  const typing = await startTyping(account, contactIgId, ctx);
   const history = await loadConversation(account.id, contactIgId, ctx);
   const res = await generateReply(account.aiSystemPrompt?.trim() || DEFAULT_SYSTEM_PROMPT, history, account.knowledgeText);
   const ai: AiInfo = { model: res.model, latencyMs: res.latencyMs, attempts: res.attempts, error: res.error };
@@ -288,6 +306,7 @@ async function aiReply(account: Account, contact: Contact, mid: string, ctx: Ctx
     aiDetail.push("→ fallback");
   }
 
+  await typing(text);
   const sent = await ig.sendDirectMessage(account.igUserId, contactIgId, { text }, { accessToken: tokenFor(account, ctx), forceMock: ctx.simulated });
   const detail = [...aiDetail, sent.ok ? `${sent.mock ? "MOCK " : ""}id=${sent.id}` : `IG chyba: ${sent.error}`].filter(Boolean).join(" · ");
   const out = await finish(sent.ok ? "sent" : "failed", text, detail, { request: sent.request, ai });
@@ -562,6 +581,21 @@ async function logSkipped(
     simulated: !!ctx.simulated,
   });
   return { kind, status: "skipped", text, detail: reason };
+}
+
+/**
+ * Pošle sender_action typing_on a vrátí funkci, která před odesláním textu počká do typingDelayMs (od zavolání).
+ * V simulaci a MOCK režimu nic neposílá ani nečeká. Chyba typing_on odpověď nikdy neblokuje.
+ */
+async function startTyping(account: Account, recipientId: string, ctx: Ctx): Promise<(text: string) => Promise<void>> {
+  if (ctx.simulated || env.instagramMock) return async () => {};
+  const started = Date.now();
+  const res = await ig.sendSenderAction(account.igUserId, recipientId, "typing_on", { accessToken: tokenFor(account, ctx) });
+  if (!res.ok) console.warn(`[engine] typing_on selhal (@${account.username}): ${res.error}`);
+  return async (text) => {
+    const wait = typingDelayMs(text) - (Date.now() - started);
+    if (wait > 0) await sleep(wait);
+  };
 }
 
 function tokenFor(account: Account, ctx: Ctx) {

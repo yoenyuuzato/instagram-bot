@@ -27,7 +27,7 @@ Instagram ──webhook──▶ /api/webhooks/instagram ──(after)──▶ 
 | --- | --- |
 | `app/api/webhooks/instagram/route.ts` | Webhook endpoint. GET verifikace, POST ověří podpis HMAC-SHA256 nad raw tělem, vrátí `200 EVENT_RECEIVED` a zpracování spustí přes `after()`. |
 | `lib/engine/normalize.ts` | Normalizace textu – lowercase, bez diakritiky, sjednocené mezery; pro exact match i ořez interpunkce/emoji. |
-| `lib/engine/match.ts` | Výběr pravidla. Priorita: pravidlo pro konkrétní post > přesná shoda > obsahuje > nejstarší. Pravidlo bez klíčových slov reaguje na vše. |
+| `lib/engine/match.ts` | Výběr pravidla. Přesná shoda má přednost před shodou s překlepem; dál pravidlo pro konkrétní post > přesná shoda > obsahuje > delší shodující se klíčové slovo > nejstarší. Pravidlo bez klíčových slov reaguje na vše. Tolerance překlepů (jen „obsahuje“): Levenshtein ≤1 pro slova 4–6 znaků, ≤2 pro delší, kratší slova přesně. |
 | `lib/engine/window.ts` | 24h okno pro DM, 7denní okno pro private reply na komentář. |
 | `lib/engine/process.ts` | Zpracování payloadu: dedup, kontakty, match, akce, log. |
 | `lib/ai/gemini.ts` | Volání Gemini REST API (`generateContent`, bez SDK) – timeout 20 s, max. 2 pokusy (jen 429/5xx), minimální thinking, čištění markdownu, max. ~600 znaků. |
@@ -35,7 +35,7 @@ Instagram ──webhook──▶ /api/webhooks/instagram ──(after)──▶ 
 | `lib/notify/detect.ts` | Detekce e-mailu a telefonu (CZ/SK, +420/00420/+421, mezery, pomlčky) v textu DM. |
 | `lib/notify/email.ts` | Odeslání e-mailu přes Resend REST API (bez SDK) a šablona upozornění na lead. |
 | `lib/ai/prompt.ts` | Výchozí šablona system promptu (Top Profit Design). |
-| `lib/instagram.ts` | Wrapper nad Graph API (`replyToComment`, `sendPrivateReply`, `sendDirectMessage`). V MOCK režimu vrací jen popis requestu. |
+| `lib/instagram.ts` | Wrapper nad Graph API (`replyToComment`, `sendPrivateReply`, `sendDirectMessage` vč. quick replies, `sendSenderAction`, `setIceBreakers`). V MOCK režimu vrací jen popis requestu. |
 | `lib/crypto.ts` | AES-256-GCM šifrování access tokenů. |
 | `lib/auth.ts`, `proxy.ts` | Ochrana `/admin` – heslo → podepsaná HttpOnly cookie (HMAC, 7 dní). V Next.js 16 se `middleware.ts` jmenuje `proxy.ts`. |
 | `lib/db/schema.ts` | Drizzle schéma, migrace v `drizzle/`. |
@@ -43,8 +43,8 @@ Instagram ──webhook──▶ /api/webhooks/instagram ──(after)──▶ 
 
 ### Datový model
 
-- **accounts** – `ig_user_id`, `username`, `access_token` (šifrovaně), `token_expires_at`, `active`, `ai_enabled`, `ai_system_prompt`, `ai_fallback_text`, `knowledge_url`, `knowledge_text`, `knowledge_updated_at`, `notify_email`
-- **rules** – `account_id`, `trigger_type` (`comment` \| `dm`), `keywords[]`, `match_mode` (`contains` \| `exact`), `post_id` (volitelné), `public_reply`, `dm_text`, `dm_button_url`, `dm_button_title`, `max_words` (jen krátká zpráva, `null` = vypnuto), `notify_on_match`, `active`
+- **accounts** – `ig_user_id`, `username`, `access_token` (šifrovaně), `token_expires_at`, `active`, `ai_enabled`, `ai_system_prompt`, `ai_fallback_text`, `knowledge_url`, `knowledge_text`, `knowledge_updated_at`, `notify_email`, `ice_breakers[]`
+- **rules** – `account_id`, `trigger_type` (`comment` \| `dm`), `keywords[]`, `match_mode` (`contains` \| `exact`), `post_id` (volitelné), `public_reply`, `dm_text`, `dm_button_url`, `dm_button_title`, `max_words` (jen krátká zpráva, `null` = vypnuto), `notify_on_match`, `quick_replies[]`, `active`
 - **events_log** – příchozí webhooky i odchozí odpovědi: `direction` (in/out), `kind`, `status`, `dedup_key` (unikátní), `detail`, `payload`, `simulated`
 - **contacts** – `account_id` + `ig_scoped_id` (unikátní), `username`, `last_interaction_at` (poslední příchozí DM → 24h okno)
 
@@ -56,6 +56,9 @@ Instagram ──webhook──▶ /api/webhooks/instagram ──(after)──▶ 
 - **Private reply:** DM na základě komentáře se posílá jako private reply (`recipient.comment_id`) – max. 1× na komentář a do 7 dní od komentáře. Nevyžaduje otevřené 24h okno.
 - **Proměnné:** v textech lze použít `{username}`. Když username chybí, dosadí se prázdný řetězec a uklidí se mezery před interpunkcí („Ahoj {username}! 👋“ → „Ahoj! 👋“).
 - **Jen krátká zpráva:** pravidlo může mít `max_words` (např. 3). Delší text pravidlo přeskočí – u DM pak odpoví AI (je-li zapnutá). Emoji a interpunkce se do slov nepočítají. U nových pravidel vypnuto.
+- **Quick replies:** DM pravidlo může mít až 13 tlačítek pod odpovědí (`rules.quick_replies`, titulek max. 20 znaků; nové pravidlo má předvyplněno 💰 Ceník, 🛠 Služby, 📁 Reference, 👤 Člověk). Payload = text tlačítka; klik přijde jako zpráva s `quick_reply.payload` a zpracuje se jako běžná DM (pravidla, AI). Instagram je na desktopu nezobrazuje.
+- **Ice breakers:** v `/admin/accounts` až 4 úvodní otázky (`accounts.ice_breakers`) → **Uložit a nastavit na Instagramu** (`POST /<ig_id>/messenger_profile`, `platform: instagram`; prázdné = `DELETE`). Klik přijde jako webhook `postback` a zpracuje se jako zpráva s textem otázky. Vyžaduje odběr `messaging_postbacks`. V MOCK režimu se nic neodesílá.
+- **Typing:** před odesláním DM odpovědi (pravidlo i AI) bot pošle `sender_action: typing_on` a počká 1–2,5 s podle délky textu (u AI se počítá i doba generování). V simulaci a MOCK režimu se nečeká. Podpora `sender_action` v Instagram API with Instagram Login není v dokumentaci jednoznačná (stránka Sender Actions uvádí `graph.facebook.com`) – když volání selže, jen se zaloguje a odpověď odejde.
 - **Tlačítko:** pokud má pravidlo `dm_button_url`, DM se pošle jako button template s `web_url` tlačítkem.
 
 ## AI odpovědi (Gemini)
@@ -149,7 +152,7 @@ Použijeme **Instagram API with Instagram Login** (graph.instagram.com) – nepo
   - Callback URL: `https://<domena>/api/webhooks/instagram`
   - Verify token: hodnota `META_VERIFY_TOKEN`
   - Ověřit (Meta pošle GET s `hub.challenge`, endpoint ho vrátí)
-- [ ] Přihlásit odběr polí **`comments`** a **`messages`** (případně `messaging_postbacks` pro tlačítka)
+- [ ] Přihlásit odběr polí **`comments`**, **`messages`** a **`messaging_postbacks`** (kliky na ice breakers)
 - [ ] Pro každý připojený účet aktivovat odběr: `POST https://graph.instagram.com/v23.0/me/subscribed_apps?subscribed_fields=comments,messages` s jeho tokenem
 - [ ] Ověřit podpis: v logu se nesmí objevovat 401 `Invalid signature`
 

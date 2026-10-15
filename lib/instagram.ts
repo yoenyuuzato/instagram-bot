@@ -6,7 +6,7 @@ import { randomUUID } from "node:crypto";
 import { env } from "./env";
 
 export type GraphRequest = {
-  method: "POST";
+  method: "POST" | "DELETE";
   path: string;
   body: Record<string, unknown>;
 };
@@ -21,9 +21,29 @@ export type GraphResult = {
 
 type Options = { accessToken: string | null; forceMock?: boolean };
 
-export type DmContent = { text: string; buttonUrl?: string | null; buttonTitle?: string | null };
+export type DmContent = {
+  text: string;
+  buttonUrl?: string | null;
+  buttonTitle?: string | null;
+  /** Texty quick reply tlačítek (max. 13, titulek max. 20 znaků); payload = text tlačítka. */
+  quickReplies?: string[] | null;
+};
 
-function messagePayload({ text, buttonUrl, buttonTitle }: DmContent) {
+export const MAX_QUICK_REPLIES = 13;
+export const QUICK_REPLY_MAX_CHARS = 20;
+
+export function quickRepliesPayload(items: string[] | null | undefined) {
+  const list = (items ?? []).map((t) => t.trim()).filter(Boolean).slice(0, MAX_QUICK_REPLIES);
+  if (!list.length) return undefined;
+  return list.map((t) => ({ content_type: "text", title: [...t].slice(0, QUICK_REPLY_MAX_CHARS).join(""), payload: t }));
+}
+
+function messagePayload(content: DmContent) {
+  const quick_replies = quickRepliesPayload(content.quickReplies);
+  return { ...baseMessage(content), ...(quick_replies ? { quick_replies } : {}) };
+}
+
+function baseMessage({ text, buttonUrl, buttonTitle }: DmContent) {
   if (!buttonUrl) return { text };
   return {
     attachment: {
@@ -50,9 +70,14 @@ async function call(req: GraphRequest, opts: Options): Promise<GraphResult> {
       headers: { "Content-Type": "application/json", Authorization: `Bearer ${opts.accessToken}` },
       body: JSON.stringify(req.body),
     });
-    const data = (await res.json().catch(() => ({}))) as { id?: string; message_id?: string; error?: { message?: string } };
+    const data = (await res.json().catch(() => ({}))) as {
+      id?: string;
+      message_id?: string;
+      success?: boolean;
+      error?: { message?: string };
+    };
     if (!res.ok) return { ok: false, mock: false, request: req, error: data.error?.message ?? `HTTP ${res.status}` };
-    return { ok: true, mock: false, id: data.id ?? data.message_id, request: req };
+    return { ok: true, mock: false, id: data.id ?? data.message_id ?? (data.success ? "success" : undefined), request: req };
   } catch (e) {
     return { ok: false, mock: false, request: req, error: e instanceof Error ? e.message : String(e) };
   }
@@ -82,6 +107,35 @@ export function sendDirectMessage(igUserId: string, recipientId: string, content
       method: "POST",
       path: `/${igUserId}/messages`,
       body: { recipient: { id: recipientId }, message: messagePayload(content) },
+    },
+    opts,
+  );
+}
+
+/**
+ * Indikátor psaní ("…") v konverzaci. Request smí obsahovat jen recipient + sender_action.
+ * Podpora v Instagram API with Instagram Login není v dokumentaci jednoznačná – chyba nesmí blokovat odpověď.
+ */
+export function sendSenderAction(igUserId: string, recipientId: string, action: "typing_on" | "typing_off" | "mark_seen", opts: Options) {
+  return call({ method: "POST", path: `/${igUserId}/messages`, body: { recipient: { id: recipientId }, sender_action: action } }, opts);
+}
+
+export const MAX_ICE_BREAKERS = 4;
+
+/** Ice breakers (max. 4 otázky) – payload = text otázky, klik přijde jako webhook postback. Prázdný seznam je smaže. */
+export function setIceBreakers(igUserId: string, questions: string[], opts: Options) {
+  const list = questions.map((q) => q.trim()).filter(Boolean).slice(0, MAX_ICE_BREAKERS);
+  if (!list.length) {
+    return call({ method: "DELETE", path: `/${igUserId}/messenger_profile`, body: { fields: ["ice_breakers"] } }, opts);
+  }
+  return call(
+    {
+      method: "POST",
+      path: `/${igUserId}/messenger_profile`,
+      body: {
+        platform: "instagram",
+        ice_breakers: [{ call_to_actions: list.map((question) => ({ question, payload: question })), locale: "default" }],
+      },
     },
     opts,
   );

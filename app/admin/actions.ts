@@ -7,9 +7,10 @@ import { eq } from "drizzle-orm";
 import { checkPassword, createSessionToken, SESSION_COOKIE, SESSION_TTL_SECONDS, verifySessionToken } from "@/lib/auth";
 import { getDb } from "@/lib/db";
 import { accounts, rules } from "@/lib/db/schema";
-import { encrypt } from "@/lib/crypto";
+import { decrypt, encrypt } from "@/lib/crypto";
 import { crawlSite, normalizeStartUrl } from "@/lib/knowledge/crawl";
 import { buildLeadEmail, isValidEmail, sendEmail } from "@/lib/notify/email";
+import { MAX_ICE_BREAKERS, MAX_QUICK_REPLIES, QUICK_REPLY_MAX_CHARS, setIceBreakers } from "@/lib/instagram";
 
 export type FormState = { error?: string; ok?: string } | undefined;
 
@@ -53,6 +54,13 @@ function parseRule(fd: FormData) {
     .filter(Boolean);
   const dmButtonUrl = opt(fd, "dmButtonUrl");
   const shortOnly = fd.get("shortOnly") === "on";
+  const quickReplies =
+    triggerType === "dm"
+      ? str(fd, "quickReplies")
+          .split("\n")
+          .map((q) => q.trim())
+          .filter(Boolean)
+      : [];
   const maxWords = Number(str(fd, "maxWords"));
   const data = {
     accountId: Number(str(fd, "accountId")),
@@ -67,6 +75,7 @@ function parseRule(fd: FormData) {
     dmButtonTitle: dmButtonUrl ? opt(fd, "dmButtonTitle") : null,
     maxWords: shortOnly ? maxWords : null,
     notifyOnMatch: fd.get("notifyOnMatch") === "on",
+    quickReplies,
     active: fd.get("active") === "on",
   } as const;
 
@@ -74,6 +83,10 @@ function parseRule(fd: FormData) {
   if (!data.publicReply && !data.dmText) return { error: "Vyplňte veřejnou odpověď nebo text DM." };
   if (dmButtonUrl && !/^https?:\/\//.test(dmButtonUrl)) return { error: "URL tlačítka musí začínat http(s)://" };
   if (dmButtonUrl && !data.dmText) return { error: "Tlačítko vyžaduje text DM." };
+  if (quickReplies.length > MAX_QUICK_REPLIES) return { error: `Quick replies: max. ${MAX_QUICK_REPLIES} tlačítek.` };
+  const tooLong = quickReplies.find((q) => [...q].length > QUICK_REPLY_MAX_CHARS);
+  if (tooLong) return { error: `Quick reply „${tooLong}“ je delší než ${QUICK_REPLY_MAX_CHARS} znaků.` };
+  if (quickReplies.length && !data.dmText) return { error: "Quick replies vyžadují text DM." };
   if (shortOnly && !(Number.isInteger(maxWords) && maxWords >= 1 && maxWords <= 50)) {
     return { error: "Max. počet slov musí být celé číslo 1–50." };
   }
@@ -249,4 +262,39 @@ export async function saveNotifyEmailAction(_: FormState, fd: FormData): Promise
   );
   if (!res.ok) return { error: `Uloženo, ale testovací e-mail se neodeslal: ${res.error}` };
   return { ok: `Testovací e-mail odeslán na ${notifyEmail} (Resend id ${res.id}).` };
+}
+
+/** Ice breakers: uloží otázky; s intent=apply je nastaví i na Instagramu (messenger_profile). */
+export async function saveIceBreakersAction(_: FormState, fd: FormData): Promise<FormState> {
+  await requireAdmin();
+  const id = Number(str(fd, "id"));
+  if (!Number.isInteger(id) || id <= 0) return { error: "Neplatný účet." };
+  const questions = fd
+    .getAll("iceBreaker")
+    .map((q) => String(q).trim())
+    .filter(Boolean);
+  if (questions.length > MAX_ICE_BREAKERS) return { error: `Max. ${MAX_ICE_BREAKERS} otázky.` };
+  const tooLong = questions.find((q) => [...q].length > 80);
+  if (tooLong) return { error: `Otázka „${tooLong.slice(0, 30)}…“ je příliš dlouhá (max. 80 znaků).` };
+
+  const db = getDb();
+  const [account] = await db
+    .update(accounts)
+    .set({ iceBreakers: questions, updatedAt: new Date() })
+    .where(eq(accounts.id, id))
+    .returning();
+  if (!account) return { error: "Účet nenalezen." };
+  revalidatePath("/admin/accounts");
+  if (str(fd, "intent") !== "apply") return { ok: "Otázky uloženy (na Instagramu zatím nezměněny)." };
+
+  let accessToken: string | null = null;
+  try {
+    accessToken = account.accessToken ? decrypt(account.accessToken) : null;
+  } catch {
+    return { error: "Uloženo, ale access token účtu nejde dešifrovat (TOKEN_ENCRYPTION_KEY)." };
+  }
+  const res = await setIceBreakers(account.igUserId, questions, { accessToken });
+  if (!res.ok) return { error: `Uloženo, ale Instagram odmítl: ${res.error}` };
+  const what = questions.length ? `Nastaveno ${questions.length} otázek` : "Ice breakers smazány";
+  return { ok: res.mock ? `${what} – MOCK režim, na Instagram se nic neposlalo (INSTAGRAM_MOCK).` : `${what} na Instagramu.` };
 }

@@ -20,6 +20,7 @@ const rule = (over: Partial<Rule>): Rule => ({
   dmButtonTitle: null,
   maxWords: null,
   notifyOnMatch: false,
+  quickReplies: [],
   active: true,
   createdAt: new Date(),
   updatedAt: new Date(),

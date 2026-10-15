@@ -6,11 +6,15 @@ import { saveRuleAction } from "../../actions";
 
 type AccountOption = { id: number; username: string };
 
+const DEFAULT_QUICK_REPLIES = ["💰 Ceník", "🛠 Služby", "📁 Reference", "👤 Člověk"];
+
 export function RuleForm({ rule, accounts }: { rule?: Rule; accounts: AccountOption[] }) {
   const [state, action, pending] = useActionState(saveRuleAction, undefined);
   const [trigger, setTrigger] = useState<"comment" | "dm">(rule?.triggerType ?? "comment");
   const [buttonUrl, setButtonUrl] = useState(rule?.dmButtonUrl ?? "");
   const [shortOnly, setShortOnly] = useState(rule?.maxWords != null);
+  // Nové pravidlo: předvyplněná výchozí sada. Uložené pravidlo: jeho hodnota.
+  const [quickReplies, setQuickReplies] = useState((rule ? rule.quickReplies : DEFAULT_QUICK_REPLIES).join("\n"));
 
   if (accounts.length === 0) {
     return <p className="card text-sm text-neutral-600">Nejdřív přidejte účet v sekci Účty.</p>;
@@ -128,6 +132,32 @@ export function RuleForm({ rule, accounts }: { rule?: Rule; accounts: AccountOpt
           {trigger === "comment" ? "Private reply jde poslat 1× na komentář do 7 dní." : "DM se odešle jen v 24h okně od zprávy uživatele."}
         </p>
       </div>
+
+      {trigger === "dm" && (
+        <div>
+          <div className="flex items-center justify-between gap-2">
+            <label className="label" htmlFor="quickReplies">
+              Quick replies (volitelné)
+            </label>
+            <button type="button" className="text-xs text-neutral-500 underline" onClick={() => setQuickReplies(DEFAULT_QUICK_REPLIES.join("\n"))}>
+              Vložit výchozí sadu
+            </button>
+          </div>
+          <textarea
+            id="quickReplies"
+            name="quickReplies"
+            rows={4}
+            className="input"
+            value={quickReplies}
+            onChange={(e) => setQuickReplies(e.target.value)}
+            placeholder={DEFAULT_QUICK_REPLIES.join("\n")}
+          />
+          <p className="hint">
+            Tlačítka pod odpovědí – jedno na řádek, max. 13, každé max. 20 znaků. Klik pošle text tlačítka jako běžnou zprávu
+            (zachytí ho pravidla, např. „ceník“). Na desktopu Instagram tlačítka nezobrazuje. Prázdné = bez tlačítek.
+          </p>
+        </div>
+      )}
 
       <div className="grid gap-4 sm:grid-cols-[2fr_1fr]">
         <div>
