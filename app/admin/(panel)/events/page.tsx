@@ -1,8 +1,8 @@
 import Link from "next/link";
-import { and, desc, eq, type SQL } from "drizzle-orm";
+import { and, asc, count, desc, eq, type SQL } from "drizzle-orm";
 import { getDb } from "@/lib/db";
 import { accounts, eventsLog } from "@/lib/db/schema";
-import { DbError, formatDate, kindLabels, PageHeader, StatusBadge } from "../ui";
+import { AccountBadge, AccountSwitcher, DbError, formatDate, kindLabels, makeHref, PageHeader, pillClass, StatusBadge } from "../ui";
 
 const LIMIT = 200;
 
@@ -11,13 +11,13 @@ export default async function EventsPage({ searchParams }: PageProps<"/admin/eve
   const direction = sp.direction === "in" || sp.direction === "out" ? sp.direction : null;
   const accountId = Number(sp.account) || null;
 
-  let rows, accs;
+  let rows, accs, countRows;
   try {
     const db = getDb();
     const where: SQL[] = [];
     if (direction) where.push(eq(eventsLog.direction, direction));
     if (accountId) where.push(eq(eventsLog.accountId, accountId));
-    [rows, accs] = await Promise.all([
+    [rows, accs, countRows] = await Promise.all([
       db
         .select({ e: eventsLog, username: accounts.username })
         .from(eventsLog)
@@ -25,7 +25,12 @@ export default async function EventsPage({ searchParams }: PageProps<"/admin/eve
         .where(where.length ? and(...where) : undefined)
         .orderBy(desc(eventsLog.createdAt), desc(eventsLog.id))
         .limit(LIMIT),
-      db.select({ id: accounts.id, username: accounts.username }).from(accounts),
+      db.select({ id: accounts.id, username: accounts.username }).from(accounts).orderBy(asc(accounts.username)),
+      db
+        .select({ accountId: eventsLog.accountId, n: count() })
+        .from(eventsLog)
+        .where(direction ? eq(eventsLog.direction, direction) : undefined)
+        .groupBy(eventsLog.accountId),
     ]);
   } catch (e) {
     return (
@@ -36,19 +41,18 @@ export default async function EventsPage({ searchParams }: PageProps<"/admin/eve
     );
   }
 
-  const href = (p: Record<string, string | null>) => {
-    const q = new URLSearchParams();
-    const merged = { direction, account: accountId ? String(accountId) : null, ...p };
-    for (const [k, v] of Object.entries(merged)) if (v) q.set(k, v);
-    const s = q.toString();
-    return `/admin/events${s ? `?${s}` : ""}`;
-  };
-  const pill = (active: boolean) =>
-    `rounded-md px-2.5 py-1 text-sm ${active ? "bg-neutral-900 text-white" : "bg-white border border-neutral-200 text-neutral-600 hover:bg-neutral-100"}`;
+  const href = makeHref("/admin/events", { direction, account: accountId ? String(accountId) : null });
+  const pill = pillClass;
+  const counts = new Map<number, number>();
+  for (const c of countRows) if (c.accountId != null) counts.set(c.accountId, c.n);
 
   return (
     <>
       <PageHeader title="Log událostí" />
+      <AccountSwitcher accounts={accs} current={accountId} counts={counts}
+        total={countRows.reduce((a, c) => a + c.n, 0)}
+        href={(account) => href({ account })}
+      />
       <div className="mb-4 flex flex-wrap gap-2">
         <Link href={href({ direction: null })} className={pill(!direction)}>
           Vše
@@ -59,15 +63,6 @@ export default async function EventsPage({ searchParams }: PageProps<"/admin/eve
         <Link href={href({ direction: "out" })} className={pill(direction === "out")}>
           Odchozí
         </Link>
-        <span className="mx-2 border-l border-neutral-200" />
-        <Link href={href({ account: null })} className={pill(!accountId)}>
-          Všechny účty
-        </Link>
-        {accs.map((a) => (
-          <Link key={a.id} href={href({ account: String(a.id) })} className={pill(accountId === a.id)}>
-            @{a.username}
-          </Link>
-        ))}
       </div>
 
       <div className="card overflow-x-auto p-0">
@@ -89,7 +84,7 @@ export default async function EventsPage({ searchParams }: PageProps<"/admin/eve
               {rows.map(({ e, username }) => (
                 <tr key={e.id}>
                   <td className="text-xs whitespace-nowrap text-neutral-500">{formatDate(e.createdAt)}</td>
-                  <td className="whitespace-nowrap">{username ? `@${username}` : "—"}</td>
+                  <td className="whitespace-nowrap">{username && e.accountId ? <AccountBadge id={e.accountId} username={username} /> : "—"}</td>
                   <td className="whitespace-nowrap">
                     <span className="mr-1 text-neutral-400">{e.direction === "in" ? "←" : "→"}</span>
                     {kindLabels[e.kind] ?? e.kind}

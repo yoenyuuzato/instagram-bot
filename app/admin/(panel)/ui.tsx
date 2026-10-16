@@ -1,3 +1,5 @@
+import Link from "next/link";
+
 export function PageHeader({ title, children }: { title: string; children?: React.ReactNode }) {
   return (
     <div className="mb-6 flex flex-wrap items-center justify-between gap-3">
@@ -64,4 +66,73 @@ export function DbError({ error }: { error: unknown }) {
       <p className="mt-2">Zkontrolujte DATABASE_URL a spusťte migrace (<code>npm run db:migrate</code>).</p>
     </div>
   );
+}
+
+// Barva štítku účtu – podle ID, aby byla stejná na všech stránkách.
+const accountColors = [
+  "bg-sky-100 text-sky-800 border-sky-200",
+  "bg-emerald-100 text-emerald-800 border-emerald-200",
+  "bg-violet-100 text-violet-800 border-violet-200",
+  "bg-amber-100 text-amber-800 border-amber-200",
+  "bg-rose-100 text-rose-800 border-rose-200",
+  "bg-teal-100 text-teal-800 border-teal-200",
+  "bg-indigo-100 text-indigo-800 border-indigo-200",
+  "bg-orange-100 text-orange-800 border-orange-200",
+];
+
+export function accountColor(id: number) {
+  return accountColors[Math.abs(id) % accountColors.length];
+}
+
+export function AccountBadge({ id, username }: { id: number; username: string }) {
+  return (
+    <span className={`inline-block rounded border px-1.5 py-0.5 text-xs font-medium whitespace-nowrap ${accountColor(id)}`}>
+      @{username}
+    </span>
+  );
+}
+
+export const pillClass = (active: boolean) =>
+  `rounded-md px-2.5 py-1 text-sm ${active ? "bg-neutral-900 text-white" : "bg-white border border-neutral-200 text-neutral-600 hover:bg-neutral-100"}`;
+
+/** Přepínač účtu (?account=ID). `counts` = počet položek u každého účtu. */
+export function AccountSwitcher({
+  accounts,
+  current,
+  counts,
+  total,
+  href,
+}: {
+  accounts: { id: number; username: string }[];
+  current: number | null;
+  counts?: Map<number, number>;
+  /** Počet u „Všechny účty“; výchozí = součet `counts`. */
+  total?: number;
+  href: (account: string | null) => string;
+}) {
+  total ??= counts ? [...counts.values()].reduce((a, b) => a + b, 0) : undefined;
+  const count = (n: number | null | undefined) => (n == null ? null : <span className="ml-1.5 text-xs opacity-60">{n}</span>);
+  return (
+    <div className="mb-3 flex flex-wrap gap-2">
+      <Link href={href(null)} className={pillClass(!current)}>
+        Všechny účty{count(total)}
+      </Link>
+      {accounts.map((a) => (
+        <Link key={a.id} href={href(String(a.id))} className={`inline-flex items-center gap-1.5 ${pillClass(current === a.id)}`}>
+          <span className={`inline-block h-2.5 w-2.5 rounded-full border ${accountColor(a.id)}`} />@{a.username}
+          {counts && count(counts.get(a.id) ?? 0)}
+        </Link>
+      ))}
+    </div>
+  );
+}
+
+/** Sestaví URL stránky ze současných parametrů + změn (null/"" = odebrat). */
+export function makeHref(path: string, current: Record<string, string | null>) {
+  return (p: Record<string, string | null>) => {
+    const q = new URLSearchParams();
+    for (const [k, v] of Object.entries({ ...current, ...p })) if (v) q.set(k, v);
+    const s = q.toString();
+    return `${path}${s ? `?${s}` : ""}`;
+  };
 }

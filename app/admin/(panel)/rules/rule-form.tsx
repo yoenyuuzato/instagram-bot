@@ -8,7 +8,15 @@ type AccountOption = { id: number; username: string };
 
 const DEFAULT_QUICK_REPLIES = ["💰 Ceník", "🛠 Služby", "📁 Reference", "👤 Člověk"];
 
-export function RuleForm({ rule, accounts }: { rule?: Rule; accounts: AccountOption[] }) {
+export function RuleForm({
+  rule,
+  accounts,
+  defaultAccountId,
+}: {
+  rule?: Rule;
+  accounts: AccountOption[];
+  defaultAccountId?: number;
+}) {
   const [state, action, pending] = useActionState(saveRuleAction, undefined);
   const [trigger, setTrigger] = useState<"comment" | "dm">(rule?.triggerType ?? "comment");
   const [buttonUrl, setButtonUrl] = useState(rule?.dmButtonUrl ?? "");
@@ -35,7 +43,7 @@ export function RuleForm({ rule, accounts }: { rule?: Rule; accounts: AccountOpt
           <label className="label" htmlFor="accountId">
             Účet
           </label>
-          <select id="accountId" name="accountId" className="input" defaultValue={rule?.accountId ?? accounts[0].id}>
+          <select id="accountId" name="accountId" className="input" defaultValue={rule?.accountId ?? defaultAccountId ?? accounts[0].id}>
             {accounts.map((a) => (
               <option key={a.id} value={a.id}>
                 @{a.username}

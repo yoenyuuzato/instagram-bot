@@ -1,31 +1,35 @@
 import { connection } from "next/server";
-import { and, desc, eq, gt, isNull, lte, or, sql } from "drizzle-orm";
+import { and, asc, count, desc, eq, gt, isNull, lte, or, sql, type SQL } from "drizzle-orm";
 import { getDb } from "@/lib/db";
 import { accounts, contacts, type Contact } from "@/lib/db/schema";
 import { isBotPaused } from "@/lib/engine/takeover";
 import { setContactBotAction } from "../../actions";
-import { DbError, formatDate, PageHeader } from "../ui";
+import { AccountBadge, AccountSwitcher, DbError, formatDate, makeHref, PageHeader } from "../ui";
 
 const RECENT_LIMIT = 50;
 
 type Row = { c: Contact; username: string | null };
 
-export default async function ContactsPage() {
+export default async function ContactsPage({ searchParams }: PageProps<"/admin/contacts">) {
   await connection();
+  const accountId = Number((await searchParams).account) || null;
   const now = new Date();
-  let paused: Row[], recent: Row[];
+  let paused: Row[], recent: Row[], accs: { id: number; username: string }[], countRows: { accountId: number; n: number }[];
   try {
     const db = getDb();
     const base = () =>
       db.select({ c: contacts, username: accounts.username }).from(contacts).leftJoin(accounts, eq(contacts.accountId, accounts.id));
-    [paused, recent] = await Promise.all([
+    const byAccount = (cond: SQL | undefined) => (accountId ? and(eq(contacts.accountId, accountId), cond) : cond);
+    [paused, recent, accs, countRows] = await Promise.all([
       base()
-        .where(or(eq(contacts.botPausedPermanent, true), gt(contacts.botPausedUntil, now)))
+        .where(byAccount(or(eq(contacts.botPausedPermanent, true), gt(contacts.botPausedUntil, now))))
         .orderBy(desc(contacts.botPausedPermanent), desc(contacts.botPausedUntil)),
       base()
-        .where(and(eq(contacts.botPausedPermanent, false), or(isNull(contacts.botPausedUntil), lte(contacts.botPausedUntil, now))))
+        .where(byAccount(and(eq(contacts.botPausedPermanent, false), or(isNull(contacts.botPausedUntil), lte(contacts.botPausedUntil, now)))))
         .orderBy(sql`${contacts.lastInteractionAt} desc nulls last`, desc(contacts.id))
         .limit(RECENT_LIMIT),
+      db.select({ id: accounts.id, username: accounts.username }).from(accounts).orderBy(asc(accounts.username)),
+      db.select({ accountId: contacts.accountId, n: count() }).from(contacts).groupBy(contacts.accountId),
     ]);
   } catch (e) {
     return (
@@ -36,9 +40,13 @@ export default async function ContactsPage() {
     );
   }
 
+  const href = makeHref("/admin/contacts", { account: accountId ? String(accountId) : null });
+  const counts = new Map(countRows.map((c) => [c.accountId, c.n]));
+
   return (
     <>
       <PageHeader title="Kontakty" />
+      <AccountSwitcher accounts={accs} current={accountId} counts={counts} href={(account) => href({ account })} />
       <p className="hint mb-6 max-w-2xl">
         Bot u kontaktu nereaguje na DM (pravidla ani AI), když je pauza aktivní. Pauzu spustí vaše ruční odpověď v DM (délka
         se nastavuje u účtu), <code>#stop</code> ve zprávě ji nastaví natrvalo, <code>#bot</code> ji zruší. Upozornění na leady
@@ -79,7 +87,7 @@ function ContactTable({ rows, now, empty }: { rows: Row[]; now: Date; empty: str
                     {c.username ? <span className="font-medium">@{c.username}</span> : null}
                     <div className="font-mono text-xs text-neutral-500">{c.igScopedId}</div>
                   </td>
-                  <td>{username ? `@${username}` : "—"}</td>
+                  <td>{username ? <AccountBadge id={c.accountId} username={username} /> : "—"}</td>
                   <td>{formatDate(c.lastInteractionAt)}</td>
                   <td>
                     {!paused ? (
